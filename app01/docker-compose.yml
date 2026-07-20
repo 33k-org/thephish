@@ -4,7 +4,11 @@ services:
     container_name: cassandra
     hostname: cassandra
     restart: unless-stopped
-    user: "${UID}:${GID}"
+    # No `user:` override here (unlike elasticsearch/thehive below): the
+    # vanilla Docker Hub cassandra image expects to run as root and writes
+    # its GC log to /opt/cassandra/logs, a path baked into the image (not
+    # one of the bind mounts below) - forcing an unprivileged UID breaks
+    # write access to it with "Permission denied".
     environment:
       - CASSANDRA_CLUSTER_NAME=TheHive
       - CASSANDRA_AUTHENTICATOR=PasswordAuthenticator
