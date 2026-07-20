@@ -88,6 +88,7 @@ services:
           -Xmx7250M
           -XX:MaxMetaspaceSize=400m
           -XX:ReservedCodeCacheSize=400m
+          -Ddb.janusgraph.index.search.elasticsearch.http.auth.basic.password=${ELASTICSEARCH_PASSWORD}
       # Referenced from application.conf via ${?VAR} substitution
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
       - THEHIVE_SECRET_KEY=${THEHIVE_SECRET_KEY}
