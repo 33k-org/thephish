@@ -92,7 +92,13 @@ services:
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
       - THEHIVE_SECRET_KEY=${THEHIVE_SECRET_KEY}
     volumes:
-      - ./thehive/conf:/etc/thehive:ro
+      # Mount only this one file - bind-mounting the whole /etc/thehive
+      # directory would shadow the image's own logback.xml/
+      # logback-migration.xml (the entrypoint hardcodes
+      # -Dlogger.file=/etc/thehive/logback.xml), silently downgrading
+      # logging to Logback's bare console-only BasicConfigurator fallback
+      # with no file appender - which is why thehive/logs/ stayed empty.
+      - ./thehive/conf/application.conf:/etc/thehive/application.conf:ro
       - ./thehive/data/files:/opt/thp/thehive/files
       - ./thehive/logs:/var/log/thehive
     deploy:
