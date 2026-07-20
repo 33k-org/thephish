@@ -40,6 +40,13 @@ mounts on first run and are gitignored - they live only on app01's disk.
 TheHive listens on `:9000`. First login is `admin@thehive.local` /
 `secret` - **change this immediately**.
 
+On first login you'll see a banner about a 15-day "Platinum" trial
+license - the Docker image ships with this by default. After it
+expires, TheHive falls back to the free Community license (which is
+all this pipeline needs). To avoid the expiry nag, register a free
+Community license via a StrangeBee account instead of letting the
+trial lapse.
+
 ## Connecting app02 (Cortex) later
 
 Once app02 is built, either:
