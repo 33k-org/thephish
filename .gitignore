@@ -1,0 +1,18 @@
+# Secrets - never commit real .env files, only .env.example
+.env
+**/.env
+*.env
+!.env.example
+!**/.env.example
+
+# Claude Code local project settings
+.claude/
+
+# Docker bind-mount data/log directories (created at runtime on the host)
+**/data/
+**/logs/
+**/certs/
+
+# OS / editor cruft
+.DS_Store
+*.swp
