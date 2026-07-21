@@ -222,12 +222,10 @@ mounting your own into `./misp/ssl/`.
   Cortex's own analyzer/responder catalog, and to pull each enabled
   analyzer's Docker image from its own registry - mostly hub.docker.com).
   Confirm app02's firewall allows this before first deploy.
-- **The Ollama analyzer hasn't been run against the real GPU box yet** -
-  validated locally end-to-end against a real Qwen3 instance elsewhere and
-  against Cortex's actual worker-discovery code, but not against the real
-  GPU box's network path/firewall rules (see top-level README's host
-  table). Confirm `OLLAMA_HOST`/`OLLAMA_PORT` in `.env` are reachable from
-  app02 before relying on it.
+- ~~The Ollama analyzer hasn't been run against the real GPU box yet~~ -
+  confirmed working: enabled in Cortex, run against a real submitted email,
+  correct verdict/reasoning came back using `qwen3:14b` on the real GPU
+  box.
 
 ## Connecting app01 (TheHive) once this is confirmed working
 

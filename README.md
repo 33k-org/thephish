@@ -70,7 +70,7 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   Cassandra + Elasticsearch all healthy, `/api/status` returning 200).
 - `app02/` - deployed to the real host: Cortex + MISP both healthy and
   connected to app01 (Platform management → Connectors shows both). The
-  Ollama analyzer (`ollama-analyzer/`) is built and validated locally
-  end-to-end against a real Qwen3 instance, but not yet run against the
-  real GPU box - see `app02/README.md`'s known gaps.
+  Ollama analyzer (`ollama-analyzer/`) is enabled in Cortex and confirmed
+  working end-to-end against the real GPU box (`qwen3:14b`), verdict +
+  reasoning coming back correctly on a real submitted email.
 - `mail-server/` is scaffolding only.

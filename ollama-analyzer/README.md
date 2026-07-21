@@ -41,10 +41,13 @@ for how it's wired in, built, and enabled, and "Cortex and
   `New worker list: Ollama_Phishing_Analysis 1.0` - confirming the
   local-directory catalog entry, the bind mount, and `Ollama.json` are all
   read correctly.
-
-**Not yet validated**: against the real GPU box (only tested against a
-different local Ollama instance) - confirm `OLLAMA_HOST`/`OLLAMA_PORT`
-reachability and firewall rules on the real app02 deploy.
+- The full path, for real: enabled in Cortex on the real app02 host,
+  pointed at the real GPU box (`qwen3:14b`), and run against a real
+  submitted email - came back with a correct, well-reasoned verdict. This
+  also flushed out two unrelated Cortex-side bugs along the way (both now
+  fixed, see `app02/README.md`): the `cortex/jobs` bind mount getting
+  auto-created as root, and `--no-config` silently discarding
+  `--job-directory`/`--docker-job-directory`.
 
 ## A real gotcha found while building this: Qwen3 "thinks" by default
 
