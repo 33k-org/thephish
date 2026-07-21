@@ -58,6 +58,34 @@ access to app02 the moment the cortex container starts, and will need
 `sudo chown root:docker /var/run/docker.sock` (or `sudo systemctl restart
 docker`) to recover.
 
+## A real gotcha found while building this: `--no-config` silently discards `--job-directory`
+
+Cortex's "docker" job runner needs to know two paths for the shared jobs
+directory: the container-internal one (`job.directory`) and the
+absolute-host one (`job.dockerDirectory`, needed because Cortex spawns each
+analyzer/responder as a *sibling* container via the host's Docker socket -
+the daemon resolves bind-mount sources against the host filesystem, not
+from inside Cortex's own container). The obvious way to set these looks
+like the `--job-directory`/`--docker-job-directory` CLI flags - but Cortex's
+own entrypoint script only writes those flags' values into a config file it
+generates itself, and that generation is skipped entirely when `--no-config`
+is passed (which this compose file's `cortex` service does, for other
+reasons). With `--no-config`, those two flags are silently discarded and
+`job.directory`/`job.dockerDirectory` fall back to their default
+(`java.io.tmpdir`, plain `/tmp`) - which matches neither of our bind mounts.
+
+Confirmed on a real deploy: jobs failed with cortexutils falling back to
+(empty) stdin, same symptom as the root-owned-`cortex/jobs` bug below but a
+different cause - the failing job's `docker compose logs cortex` showed
+`volumes : /tmp/cortex-job-<id>-<n>`, with no `cortex-jobs` segment at all,
+proving Cortex never pointed at the right directory to begin with. Both
+bugs had to be fixed for real jobs to work: the root-owned-directory one
+(below) blocks it even once Cortex points at the right place, and this one
+means Cortex wasn't pointing at the right place at all. Fixed by setting
+`job.directory`/`job.dockerDirectory` directly in
+`cortex/conf/application.conf` instead of relying on the CLI flags -
+see the comment there.
+
 ## First-time deploy
 
 ```bash
