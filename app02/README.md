@@ -103,6 +103,13 @@ login is `admin@thephish.local` / the value you set for
 `MISP_ADMIN_PASSWORD` - **change this immediately** if you left it as a
 generated placeholder.
 
+**`MISP_BASE_URL` must include `:9443`.** Confirmed on a real deploy: leave
+the port off and MISP's own redirects send you to `https://<host>` with
+its implicit `:443`, which nothing is listening on (we mapped container
+443 to host 9443) - looks exactly like a hung/broken TLS connection, not a
+redirect problem. Fix by setting it correctly in `.env` and recreating:
+`docker compose up -d misp-core`.
+
 Default feeds ship **disabled** - the `FETCH_FEED_INTERVAL`/
 `CRON_PULLALL`/etc. env vars only control *scheduling*, they don't enable
 any feed themselves. To turn on the community feeds decided on for this
