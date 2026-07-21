@@ -13,6 +13,16 @@
 **/logs/
 **/certs/
 
+# app02 (Cortex + MISP) bind-mount dirs not covered by the generic
+# data/logs/certs patterns above
+app02/cortex/jobs/
+app02/misp/configs/
+app02/misp/files/
+app02/misp/ssl/
+app02/misp/gnupg/
+app02/misp/db-data/
+app02/misp/redis-data/
+
 # OS / editor cruft
 .DS_Store
 *.swp
