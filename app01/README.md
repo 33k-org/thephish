@@ -49,19 +49,22 @@ will be left without a valid license once it lapses. A Community
 license is all this pipeline needs; no paid Enterprise tier is
 required.
 
-## Connecting app02 (Cortex) later
+## Connecting app02 (Cortex + MISP)
 
-Once app02 is built, either:
+`thehive/conf/application.conf`'s `cortex`/`misp` blocks are already
+uncommented and pointed at app02. On first deploy (or after rotating
+either API key):
 
-1. Uncomment the `cortex` block in `thehive/conf/application.conf`, fill
-   in app02's address, add `CORTEX_API_KEY` to `.env`, wire it into the
-   `thehive` service's `environment:` in `docker-compose.yml`, and
-   restart TheHive; or
-2. Leave `application.conf` alone and configure it via the UI instead:
-   **Platform management → Connectors → Cortex → Servers → Add** (this is
-   what StrangeBee's own docs recommend as of TheHive 5).
-
-Same pattern applies to the `misp` block for app02's MISP instance.
+1. Add `CORTEX_API_KEY` and `MISP_API_KEY` to `.env` (generated in Cortex
+   under Organization → Users → your TheHive user, and in MISP under My
+   Profile → Auth keys - see `app02/README.md`'s first-login steps).
+2. `docker compose up -d thehive` to pick up the new env vars.
+3. **Platform management → Connectors**: both should show connected. For
+   MISP specifically, also switch off its per-server **"Don't check
+   certificate authority"** toggle - confirmed on a real deploy that the
+   global `play.ws.ssl.loose.acceptAnyCertificate` setting in
+   `application.conf` alone isn't enough, since MISP serves a self-signed
+   cert (app02's own deliberate choice - see `app02/README.md`).
 
 ## Known gaps to reconcile against the real app01
 
