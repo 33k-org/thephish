@@ -41,11 +41,13 @@ TheHive listens on `:9000`. First login is `admin@thehive.local` /
 `secret` - **change this immediately**.
 
 On first login you'll see a banner about a 15-day "Platinum" trial
-license - the Docker image ships with this by default. After it
-expires, TheHive falls back to the free Community license (which is
-all this pipeline needs). To avoid the expiry nag, register a free
-Community license via a StrangeBee account instead of letting the
-trial lapse.
+license - the Docker image ships with this by default. **It does not
+automatically fall back to or request a Community license when the
+trial expires** - you must proactively register a free Community
+license via a StrangeBee account before the trial runs out, or TheHive
+will be left without a valid license once it lapses. A Community
+license is all this pipeline needs; no paid Enterprise tier is
+required.
 
 ## Connecting app02 (Cortex) later
 
