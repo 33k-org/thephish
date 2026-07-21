@@ -66,18 +66,21 @@ cp .env.example .env
 # *_PASSWORD / *_SECRET_KEY / *_PASSPHRASE values (e.g.
 # `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64`).
 
+# First `up` will fail cortex-elasticsearch with "Error opening log file
+# 'gc.log': Permission denied" - same root-owned-bind-mount issue app01's
+# elasticsearch hits (confirmed on a real fresh app02 deploy, not just
+# locally). Docker creates ./cortex-elasticsearch/{data,logs} as root on
+# first run, before the image's own entrypoint gets a chance to chown them
+# for the `user: "${UID}:0"` override. Fix, then retry:
+docker compose up -d
+sudo chown -R "${UID}:0" cortex-elasticsearch
+chmod -R g+rwX cortex-elasticsearch
 docker compose up -d
 ```
 
 Data/log/job bind-mount directories (`cortex-elasticsearch/data`,
 `cortex/jobs`, `misp/db-data`, etc.) are created automatically on first run
-and are gitignored - they live only on app02's disk. Unlike app01's
-elasticsearch, this repo's cortex-elasticsearch didn't need a host-side
-`chown` before first boot when tested locally (the bind-mount dirs were
-already owned by the deploying user rather than root) - but if app02 hits
-the same "Permission denied" on `gc.log` that app01 did, the fix is
-identical: `chown -R "${UID}:0" cortex-elasticsearch && chmod -R g+rwX
-cortex-elasticsearch`.
+and are gitignored - they live only on app02's disk.
 
 ### Cortex - first login
 
