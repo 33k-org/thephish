@@ -69,6 +69,16 @@ cp .env.example .env
 # *_PASSWORD / *_SECRET_KEY / *_PASSPHRASE values (e.g.
 # `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64`).
 
+# Create cortex/jobs yourself *before* the first `up` - if Docker has to
+# auto-create it as a bind-mount target, it does so as root, and Cortex's
+# own process (running as your UID via --daemon-user) then can't create
+# per-job subdirectories in it. Confirmed on a real deploy: jobs silently
+# failed with cortexutils falling back to (empty) stdin, because the
+# per-job folder Cortex wrote never made it into the spawned analyzer
+# container - root-owned parent, permission denied, no error surfaced
+# until you dig into `docker compose logs cortex`.
+mkdir -p cortex/jobs
+
 # First `up` will fail cortex-elasticsearch with "Error opening log file
 # 'gc.log': Permission denied" - same root-owned-bind-mount issue app01's
 # elasticsearch hits (confirmed on a real fresh app02 deploy, not just
@@ -81,9 +91,10 @@ chmod -R g+rwX cortex-elasticsearch
 docker compose up -d
 ```
 
-Data/log/job bind-mount directories (`cortex-elasticsearch/data`,
-`cortex/jobs`, `misp/db-data`, etc.) are created automatically on first run
-and are gitignored - they live only on app02's disk.
+Data/log bind-mount directories (`cortex-elasticsearch/data`,
+`misp/db-data`, etc.) are created automatically on first run and are
+gitignored - they live only on app02's disk. `cortex/jobs` is the one
+exception - create it yourself as shown above, for the reason given there.
 
 ### Cortex - first login
 
