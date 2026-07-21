@@ -1,0 +1,224 @@
+services:
+  # --- Cortex's own Elasticsearch ---
+  # Deliberately separate from app01's TheHive Elasticsearch: different
+  # index/version lifecycle, and Cortex 4.x only supports ES 8.x (its own
+  # release notes dropped 7.x support), so sharing one cluster across both
+  # apps would couple their upgrade schedules for no benefit.
+  cortex-elasticsearch:
+    image: "elasticsearch:${ELASTICSEARCH_VERSION}"
+    container_name: cortex-elasticsearch
+    hostname: cortex-elasticsearch
+    restart: unless-stopped
+    user: "${UID}:0"
+    environment:
+      - http.host=0.0.0.0
+      - discovery.type=single-node
+      - cluster.name=cortex
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${CORTEX_ELASTICSEARCH_PASSWORD}
+      - ES_JAVA_OPTS=-Xms2G -Xmx2G
+    volumes:
+      - ./cortex-elasticsearch/data:/usr/share/elasticsearch/data
+      - ./cortex-elasticsearch/logs:/usr/share/elasticsearch/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+          cpus: "2"
+    memswap_limit: 2.5G
+    networks:
+      - app02-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -u 'elastic:${CORTEX_ELASTICSEARCH_PASSWORD}' http://cortex-elasticsearch:9200/_cat/health || exit 1"]
+      start_period: 40s
+      interval: 2s
+      timeout: 1s
+      retries: 5
+
+  cortex:
+    image: "thehiveproject/cortex:${CORTEX_VERSION}"
+    container_name: cortex
+    hostname: cortex
+    restart: unless-stopped
+    # No `user:` override here: mounting the host's Docker socket below
+    # already gives this container root-equivalent power over the host
+    # regardless of what UID it runs as (anyone who can talk to dockerd can
+    # launch arbitrary privileged containers), so forcing a non-root UID
+    # buys no real isolation - same reasoning as cassandra in app01.
+    # --daemon-user's group MUST match the host's `docker` group GID: the
+    # entrypoint (running as root before dropping privileges) unconditionally
+    # runs `chown cortex:cortex /var/run/docker.sock` on every start, since
+    # it renames its internal "cortex" group to whatever GID you give it
+    # here first. Leave the GID at its image default (e.g. by omitting
+    # --daemon-user) and this chown silently reassigns the *host's*
+    # docker.sock away from the `docker` group to that default GID, locking
+    # out any host user who isn't in that exact group - including anyone
+    # managing app02's Docker over SSH via the `docker` group instead of
+    # root. Confirmed by reproducing it locally: the sandbox's own `docker`
+    # CLI got permission-denied the moment this container's entrypoint ran.
+    command: >-
+      --job-directory /tmp/cortex-jobs
+      --docker-job-directory ${CORTEX_JOBS_DIR}
+      --daemon-user ${UID}:${DOCKER_GID}
+      --no-config --no-config-secret
+    environment:
+      - JAVA_OPTS=-Xms1500M -Xmx1500M
+      - CORTEX_SECRET_KEY=${CORTEX_SECRET_KEY}
+      - CORTEX_ELASTICSEARCH_PASSWORD=${CORTEX_ELASTICSEARCH_PASSWORD}
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
+      - URLHAUS_API_KEY=${URLHAUS_API_KEY}
+      - URLSCAN_API_KEY=${URLSCAN_API_KEY}
+    volumes:
+      # Mount only this one file - see app01's thehive service for why
+      # bind-mounting the whole /etc/cortex directory would be risky
+      # (shadowing image-internal files Cortex may expect at that path).
+      - ./cortex/conf/application.conf:/etc/cortex/application.conf:ro
+      # Shared with sibling analyzer containers Cortex spawns via the
+      # Docker socket below - see CORTEX_JOBS_DIR in .env.example for why
+      # this must also be passed as an absolute *host* path via --docker-job-directory.
+      - ./cortex/jobs:/tmp/cortex-jobs
+      # Lets Cortex launch analyzer/responder containers as siblings on the
+      # host. This is effectively root-on-host access for this container -
+      # acceptable here since app02 only runs analyzers we've chosen
+      # (StrangeBee's official catalog + our own ollama-analyzer), but
+      # worth remembering if this compose file is ever reused elsewhere.
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+    memswap_limit: 2G
+    networks:
+      - app02-network
+    ports:
+      - "0.0.0.0:9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f cortex:9001/api/status || exit 1"]
+      start_period: 40s
+      interval: 10s
+      timeout: 1s
+      retries: 5
+    depends_on:
+      cortex-elasticsearch:
+        condition: service_healthy
+
+  misp-redis:
+    image: "valkey/valkey:${VALKEY_VERSION}"
+    container_name: misp-redis
+    hostname: misp-redis
+    restart: unless-stopped
+    command: ["valkey-server", "--requirepass", "${MISP_REDIS_PASSWORD}"]
+    volumes:
+      - ./misp/redis-data:/data
+    networks:
+      - app02-network
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"${MISP_REDIS_PASSWORD}\" ping | grep -q PONG || exit 1"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 5s
+
+  misp-db:
+    # MISP's own reference compose uses MariaDB (not vanilla MySQL) for ARM
+    # support and specific collations MISP's schema expects.
+    image: "mariadb:${MARIADB_VERSION}"
+    container_name: misp-db
+    hostname: misp-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MISP_DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=misp
+    command: >-
+      --innodb-buffer-pool-size=1024M
+      --innodb-change-buffering=none
+    volumes:
+      - ./misp/db-data:/var/lib/mysql
+    cap_add:
+      - SYS_NICE # prevents a runaway mysql log, per MISP's own reference compose
+    networks:
+      - app02-network
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin --user=misp --password=${MISP_DB_PASSWORD} status"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 30s
+
+  misp-modules:
+    image: "ghcr.io/misp/misp-docker/misp-modules:${MISP_MODULES_VERSION}"
+    container_name: misp-modules
+    hostname: misp-modules
+    restart: unless-stopped
+    networks:
+      - app02-network
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c '</dev/tcp/localhost/6666'"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 5s
+
+  misp-core:
+    image: "ghcr.io/misp/misp-docker/misp-core:${MISP_CORE_VERSION}"
+    container_name: misp-core
+    hostname: misp-core
+    restart: unless-stopped
+    cap_add:
+      - AUDIT_WRITE
+    environment:
+      - BASE_URL=${MISP_BASE_URL}
+      - ADMIN_EMAIL=${MISP_ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${MISP_ADMIN_PASSWORD}
+      - ADMIN_KEY=${MISP_ADMIN_KEY}
+      - ADMIN_ORG=${MISP_ADMIN_ORG}
+      - GPG_PASSPHRASE=${MISP_GPG_PASSPHRASE}
+      - CRON_USER_ID=1
+      - MYSQL_HOST=misp-db
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD}
+      - MYSQL_DATABASE=misp
+      - REDIS_HOST=misp-redis
+      - REDIS_PASSWORD=${MISP_REDIS_PASSWORD}
+      # Scheduling only - doesn't itself enable any feed. Default feeds
+      # ship disabled; enable the ones you trust via the UI after first
+      # login (see README).
+      - FETCH_FEED_INTERVAL=86400
+      - CACHE_FEED_INTERVAL=86400
+      - CRON_PULLALL=86400
+      - CRON_PUSHALL=86400
+    volumes:
+      - ./misp/configs:/var/www/MISP/app/Config
+      - ./misp/logs:/var/www/MISP/app/tmp/logs
+      - ./misp/files:/var/www/MISP/app/files
+      - ./misp/ssl:/etc/nginx/certs
+      - ./misp/gnupg:/var/www/MISP/.gnupg
+    networks:
+      - app02-network
+    ports:
+      - "0.0.0.0:9443:443"
+    depends_on:
+      misp-db:
+        condition: service_healthy
+      misp-redis:
+        condition: service_healthy
+      misp-modules:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ks https://localhost/users/heartbeat > /dev/null || exit 1"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 30s
+
+networks:
+  app02-network:

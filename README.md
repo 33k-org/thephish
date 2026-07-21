@@ -14,7 +14,7 @@ verdict is emailed back to whoever forwarded the message.
 |---|---|---|
 | GPU box | Ollama (Qwen3 14B/32B), A5000 24GB VRAM, `0.0.0.0:11434` firewalled to app02 only | already built (outside this repo) |
 | `app01/` | TheHive + Cassandra + Elasticsearch | already built, being reconciled into this repo |
-| `app02/` | Cortex + MISP + MariaDB + Redis + the Ollama analyzer | not yet built |
+| `app02/` | Cortex (+ its own Elasticsearch) + MISP + MariaDB + Redis + the Ollama analyzer | Cortex + MISP built and validated locally, not yet deployed |
 | `mail-server/` | Postfix + Dovecot + ThePhish | not yet built |
 
 Each host folder is self-contained: its own `docker-compose.yml`, its own
@@ -58,14 +58,18 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   error when `mail-server/` gets built.
 - Versions currently pinned in `app01/.env.example`: TheHive 5.7.3,
   Cassandra 4.1.11, Elasticsearch 8.19.15 - StrangeBee's own currently
-  pinned combination. Cortex/MISP versions for `app02/` haven't been
-  chosen yet.
+  pinned combination.
+- Versions currently pinned in `app02/.env.example`: Cortex 4.1.0 (its own
+  Elasticsearch 8.19.15, separate from app01's), MISP core v2.5.44 +
+  misp-modules v3.0.9 (MISP's own currently recommended combination),
+  MariaDB 10.11, Valkey 7.2.
 
 ## Current status
 
-Only `app01/` has real content, and it's **unverified** against what's
-actually running on the live app01 host (this environment has no
-filesystem access to any of the servers - everything here was
-reconstructed from StrangeBee's official reference deployment). Reconcile
-`app01/` first. `app02/`, `mail-server/`, and `ollama-analyzer/` are
-scaffolding only.
+- `app01/` - deployed to the real host and confirmed working (TheHive +
+  Cassandra + Elasticsearch all healthy, `/api/status` returning 200).
+- `app02/` - Cortex + MISP built and validated end-to-end against a local
+  Docker instance (all six containers healthy, `/api/status` and
+  `/users/heartbeat` both responding), but **not yet deployed to the real
+  app02 host**.
+- `mail-server/` and `ollama-analyzer/` are scaffolding only.
