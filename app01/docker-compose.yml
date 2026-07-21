@@ -92,6 +92,8 @@ services:
       # Referenced from application.conf via ${?VAR} substitution
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
       - THEHIVE_SECRET_KEY=${THEHIVE_SECRET_KEY}
+      - CORTEX_API_KEY=${CORTEX_API_KEY}
+      - MISP_API_KEY=${MISP_API_KEY}
     volumes:
       # Mount only this one file - bind-mounting the whole /etc/thehive
       # directory would shadow the image's own logback.xml/
