@@ -14,7 +14,7 @@ verdict is emailed back to whoever forwarded the message.
 |---|---|---|
 | GPU box | Ollama (Qwen3 14B/32B), A5000 24GB VRAM, `0.0.0.0:11434` firewalled to app02 only | already built (outside this repo) |
 | `app01/` | TheHive + Cassandra + Elasticsearch | already built, being reconciled into this repo |
-| `app02/` | Cortex (+ its own Elasticsearch) + MISP + MariaDB + Redis + the Ollama analyzer | Cortex + MISP built and validated locally, not yet deployed |
+| `app02/` | Cortex (+ its own Elasticsearch) + MISP + MariaDB + Redis + the Ollama analyzer | deployed, connected to app01 |
 | `mail-server/` | Postfix + Dovecot + ThePhish | not yet built |
 
 Each host folder is self-contained: its own `docker-compose.yml`, its own
@@ -68,8 +68,9 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
 
 - `app01/` - deployed to the real host and confirmed working (TheHive +
   Cassandra + Elasticsearch all healthy, `/api/status` returning 200).
-- `app02/` - Cortex + MISP built and validated end-to-end against a local
-  Docker instance (all six containers healthy, `/api/status` and
-  `/users/heartbeat` both responding), but **not yet deployed to the real
-  app02 host**.
-- `mail-server/` and `ollama-analyzer/` are scaffolding only.
+- `app02/` - deployed to the real host: Cortex + MISP both healthy and
+  connected to app01 (Platform management → Connectors shows both). The
+  Ollama analyzer (`ollama-analyzer/`) is built and validated locally
+  end-to-end against a real Qwen3 instance, but not yet run against the
+  real GPU box - see `app02/README.md`'s known gaps.
+- `mail-server/` is scaffolding only.
