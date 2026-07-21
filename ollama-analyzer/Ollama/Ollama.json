@@ -1,0 +1,49 @@
+{
+  "name": "Ollama_Phishing_Analysis",
+  "version": "1.0",
+  "author": "33k",
+  "url": "https://github.com/33k-org/thephish",
+  "license": "AGPL-V3",
+  "description": "Sends a raw .eml file's headers and body to a self-hosted Ollama LLM for a phishing/social-engineering verdict, as a signal alongside the stock threat-intel analyzers.",
+  "dataTypeList": ["file"],
+  "baseConfig": "Ollama",
+  "dockerImage": "thephish/ollama-analyzer:1.0",
+  "config": {
+    "check_tlp": false,
+    "max_tlp": 3,
+    "auto_extract": false
+  },
+  "configurationItems": [
+    {
+      "name": "ollama_host",
+      "description": "Hostname or IP of the GPU box's Ollama instance",
+      "type": "string",
+      "multi": false,
+      "required": true
+    },
+    {
+      "name": "ollama_port",
+      "description": "Port Ollama is listening on",
+      "type": "number",
+      "multi": false,
+      "required": true,
+      "defaultValue": 11434
+    },
+    {
+      "name": "model",
+      "description": "Ollama model name to use for analysis (must already be pulled on the GPU box)",
+      "type": "string",
+      "multi": false,
+      "required": true,
+      "defaultValue": "qwen3:14b"
+    },
+    {
+      "name": "timeout",
+      "description": "Seconds to wait for Ollama's response before giving up - raise this for larger/slower models",
+      "type": "number",
+      "multi": false,
+      "required": false,
+      "defaultValue": 300
+    }
+  ]
+}

@@ -74,6 +74,9 @@ services:
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
       - URLHAUS_API_KEY=${URLHAUS_API_KEY}
       - URLSCAN_API_KEY=${URLSCAN_API_KEY}
+      - OLLAMA_HOST=${OLLAMA_HOST}
+      - OLLAMA_PORT=${OLLAMA_PORT}
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
     volumes:
       # Mount only this one file - see app01's thehive service for why
       # bind-mounting the whole /etc/cortex directory would be risky
@@ -83,6 +86,12 @@ services:
       # Docker socket below - see CORTEX_JOBS_DIR in .env.example for why
       # this must also be passed as an absolute *host* path via --docker-job-directory.
       - ./cortex/jobs:/tmp/cortex-jobs
+      # Local catalog directory for our own custom analyzer(s) - read only,
+      # just JSON + source, not runtime data (see ../ollama-analyzer/).
+      # Cortex scans one level of subdirectories under this path for a
+      # *.json worker definition each (see analyzer.urls in
+      # cortex/conf/application.conf).
+      - ../ollama-analyzer:/opt/cortex/analyzers-local:ro
       # Lets Cortex launch analyzer/responder containers as siblings on the
       # host. This is effectively root-on-host access for this container -
       # acceptable here since app02 only runs analyzers we've chosen
@@ -108,6 +117,22 @@ services:
     depends_on:
       cortex-elasticsearch:
         condition: service_healthy
+
+  # Builds and tags the custom Ollama analyzer's image so Cortex's docker
+  # job runner can find it by name (see cortex service above and
+  # ../ollama-analyzer/README.md). This service is never started - Cortex
+  # launches the image directly as a sibling container via docker.sock,
+  # bypassing compose entirely - it exists purely so
+  # `docker compose build ollama-analyzer-image` (re)builds it after any
+  # code change. The `profiles` entry keeps it out of a plain
+  # `docker compose up -d`.
+  ollama-analyzer-image:
+    build: ../ollama-analyzer/Ollama
+    # Must match the "dockerImage" value in
+    # ../ollama-analyzer/Ollama/Ollama.json - keep both in sync if you ever
+    # bump this.
+    image: thephish/ollama-analyzer:1.0
+    profiles: ["build-only"]
 
   misp-redis:
     image: "valkey/valkey:${VALKEY_VERSION}"

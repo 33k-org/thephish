@@ -1,12 +1,12 @@
 # app02 - Cortex + MISP
 
-Cortex (analysis orchestration, including the custom Ollama analyzer once
-`ollama-analyzer/` exists) + MISP (threat-intel platform), plus each one's
-own backends: Cortex gets its own dedicated Elasticsearch instance (not
-shared with app01's TheHive), MISP gets MariaDB (its database) and Valkey/
-Redis (its cache). Validated locally end-to-end (all six containers
-healthy, `/api/status` and `/users/heartbeat` both responding) before being
-pushed here - not yet deployed to the real app02 host.
+Cortex (analysis orchestration, including the custom Ollama analyzer - see
+`../ollama-analyzer/`) + MISP (threat-intel platform), plus each one's own
+backends: Cortex gets its own dedicated Elasticsearch instance (not shared
+with app01's TheHive), MISP gets MariaDB (its database) and Valkey/Redis
+(its cache). Validated locally end-to-end (all six containers healthy,
+`/api/status` and `/users/heartbeat` both responding) and deployed to the
+real app02 host, connected to app01.
 
 Sizing target: modest by design - Cortex + its ES together aim for ~4-5GB
 RAM, the MISP stack (core + modules + db + redis) another ~2-3GB. Adjust
@@ -16,16 +16,19 @@ actual specs.
 ## What's here
 
 - `docker-compose.yml` - cortex-elasticsearch + cortex + misp-redis +
-  misp-db + misp-modules + misp-core, no TLS termination in front (MISP's
-  own image already serves HTTPS itself via a bundled nginx + self-signed
-  cert - see "MISP's self-signed cert" below).
+  misp-db + misp-modules + misp-core, plus a build-only
+  `ollama-analyzer-image` service (see "The Ollama analyzer" below). No TLS
+  termination in front (MISP's own image already serves HTTPS itself via a
+  bundled nginx + self-signed cert - see "MISP's self-signed cert" below).
 - `cortex/conf/application.conf` - mounted read-only. Pulls StrangeBee's
   official analyzer/responder catalog (Docker images, fetched by Cortex
-  itself at runtime) and pre-fills API keys for four stock analyzers
-  (VirusTotal, AbuseIPDB, URLhaus, urlscan.io) from `.env`. Has a
-  `TODO(ollama-analyzer)` marker for once that analyzer exists.
+  itself at runtime) alongside a local one for our own Ollama analyzer, and
+  pre-fills API keys/config for all five enabled analyzers (VirusTotal,
+  AbuseIPDB, URLhaus, urlscan.io, Ollama) from `.env`.
 - `.env.example` - copy to `.env` (gitignored) and fill in real secrets.
   Never commit `.env`.
+- `../ollama-analyzer/` - the custom analyzer itself (source, Dockerfile,
+  catalog JSON) - see "The Ollama analyzer" below.
 
 ## A real gotcha found while building this: Cortex and `/var/run/docker.sock`
 
@@ -86,13 +89,19 @@ and are gitignored - they live only on app02's disk.
 
 Cortex listens on `:9001`. Log in, then:
 
-1. **Organization → Analyzers**: enable the analyzers you want. Their API
-   keys (VirusTotal, AbuseIPDB, URLhaus, urlscan.io) are pre-filled from
-   `.env` if set - leave any blank to skip enabling that one. Free-tier
-   signup: [virustotal.com](https://www.virustotal.com/gui/join-us),
+1. **Build the Ollama analyzer's image first** (it isn't pulled from any
+   registry - see "The Ollama analyzer" below):
+   `docker compose build ollama-analyzer-image`.
+2. **Organization → Analyzers**: enable the analyzers you want. The four
+   stock ones' API keys (VirusTotal, AbuseIPDB, URLhaus, urlscan.io) are
+   pre-filled from `.env` if set - leave any blank to skip enabling that
+   one. Free-tier signup: [virustotal.com](https://www.virustotal.com/gui/join-us),
    [abuseipdb.com](https://www.abuseipdb.com/register),
    [urlhaus.abuse.ch](https://urlhaus.abuse.ch/), [urlscan.io](https://urlscan.io/user/signup).
-2. **Organization → Users**: create a non-admin user for TheHive to
+   `Ollama_Phishing_Analysis` should also be listed (from the local catalog
+   directory, not StrangeBee's) with `ollama_host`/`ollama_port`/`model`
+   pre-filled from `.env` - enable it too.
+3. **Organization → Users**: create a non-admin user for TheHive to
    authenticate as, then generate its API key - this is what goes into
    app01's `CORTEX_API_KEY`.
 
@@ -121,6 +130,38 @@ pull.
 Once you have a use for it, generate an API key under your user profile -
 this is what goes into app01's `MISP_API_KEY`.
 
+### The Ollama analyzer
+
+`../ollama-analyzer/Ollama/` is our own custom analyzer (not part of
+StrangeBee's catalog), discovered via a second entry in
+`cortex/conf/application.conf`'s `analyzer.urls` that points at a local
+directory (`/opt/cortex/analyzers-local`, bind-mounted from
+`../ollama-analyzer`) instead of a URL - Cortex supports both. It sends a
+submitted `.eml` file's headers + body to the GPU box's Ollama instance
+and asks for a phishing/social-engineering verdict as JSON.
+
+Its Docker image is never pulled from a registry - build it locally with
+`docker compose build ollama-analyzer-image` (the
+`ollama-analyzer-image` service in `docker-compose.yml` exists solely for
+this; it's never started, since Cortex launches the image itself as a
+sibling container via docker.sock). Cortex will still attempt a `docker
+pull` before each run (`docker.autoUpdate` defaults to true) since it has
+no way to know the image is local-only - this fails harmlessly and falls
+back to the already-built local image (confirmed by reading Cortex's own
+`DockerJobRunnerSrv`/`DockerClient` source: the pull's result is discarded,
+and the image-exists check that actually gates execution matches on the
+image name regardless of where it came from). Rebuild with the same
+command after editing anything under `../ollama-analyzer/Ollama/`, then
+use Cortex's UI (**Organization → Analyzers → refresh**) or restart Cortex
+to pick up any change to `Ollama.json` itself.
+
+**Qwen3 "thinks" by default** - if you point `model` at a reasoning model
+(this pipeline's target: Qwen3 14B/32B) with Ollama's default settings, the
+JSON verdict ends up in Ollama's `thinking` field instead of `response`,
+which comes back empty (confirmed by testing live against a real Qwen3
+instance). The analyzer sends `"think": false` to avoid this - if you swap
+in a different reasoning model, verify it still respects that flag.
+
 ### MISP's self-signed cert
 
 MISP's own image terminates TLS itself via a bundled nginx + a self-signed
@@ -142,8 +183,12 @@ mounting your own into `./misp/ssl/`.
   Cortex's own analyzer/responder catalog, and to pull each enabled
   analyzer's Docker image from its own registry - mostly hub.docker.com).
   Confirm app02's firewall allows this before first deploy.
-- **`ollama-analyzer/` doesn't exist yet** - see the `TODO(ollama-analyzer)`
-  marker in `cortex/conf/application.conf`.
+- **The Ollama analyzer hasn't been run against the real GPU box yet** -
+  validated locally end-to-end against a real Qwen3 instance elsewhere and
+  against Cortex's actual worker-discovery code, but not against the real
+  GPU box's network path/firewall rules (see top-level README's host
+  table). Confirm `OLLAMA_HOST`/`OLLAMA_PORT` in `.env` are reachable from
+  app02 before relying on it.
 
 ## Connecting app01 (TheHive) once this is confirmed working
 
