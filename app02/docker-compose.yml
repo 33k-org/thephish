@@ -81,6 +81,11 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST}
       - OLLAMA_PORT=${OLLAMA_PORT}
       - OLLAMA_MODEL=${OLLAMA_MODEL}
+      - MAILER_FROM=${MAILER_FROM}
+      - MAILER_SMTP_HOST=${MAILER_SMTP_HOST}
+      - MAILER_SMTP_PORT=${MAILER_SMTP_PORT}
+      - MAILER_SMTP_USER=${MAILER_SMTP_USER}
+      - MAILER_SMTP_PASSWORD=${MAILER_SMTP_PASSWORD}
     volumes:
       # Mount only this one file - see app01's thehive service for why
       # bind-mounting the whole /etc/cortex directory would be risky
