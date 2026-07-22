@@ -23,6 +23,10 @@ app02/misp/gnupg/
 app02/misp/db-data/
 app02/misp/redis-data/
 
+# mail-server bind-mount dir - mail data, dovecot state, and the account
+# file with password hashes (postfix-accounts.cf) all live here
+mail-server/mailserver/
+
 # OS / editor cruft
 .DS_Store
 *.swp

@@ -1,0 +1,37 @@
+{
+  "web": {
+    "navbar": {
+      "thehive": "${THEHIVE_WEB_URL}",
+      "cortex": "${CORTEX_WEB_URL}",
+      "misp": "${MISP_WEB_URL}"
+    }
+  },
+  "imap": {
+    "host": "${IMAP_HOST}",
+    "port": "${IMAP_PORT}",
+    "tls": "${IMAP_TLS}",
+    "tlsinsecure": "${IMAP_TLS_INSECURE}",
+    "user": "${IMAP_USER}",
+    "password": "${IMAP_PASSWORD}",
+    "folder": "${IMAP_FOLDER}"
+  },
+  "thehive": {
+    "url": "${THEHIVE_API_URL}",
+    "apikey": "${THEHIVE_API_KEY}",
+    "tlsinsecure": "${THEHIVE_TLS_INSECURE}"
+  },
+  "cortex": {
+    "url": "${CORTEX_API_URL}",
+    "apikey": "${CORTEX_API_KEY}",
+    "id": "${CORTEX_ID}",
+    "tlsinsecure": "${CORTEX_TLS_INSECURE}"
+  },
+  "misp": {
+    "id": "${MISP_ID}"
+  },
+  "case": {
+    "tlp": "${CASE_TLP}",
+    "pap": "${CASE_PAP}",
+    "tags": ["email", "ThePhish"]
+  }
+}

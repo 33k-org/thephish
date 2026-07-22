@@ -1,0 +1,80 @@
+services:
+  # Postfix + Dovecot, bundled - receives forwarded emails (SMTP) into the
+  # monitored mailbox and exposes it over IMAP for ThePhish-NG to poll.
+  # Using docker-mailserver instead of hand-rolled Postfix/Dovecot configs -
+  # a real mail server has a lot of fiddly correctness surface (SASL, TLS,
+  # virtual mailboxes) that's not worth re-deriving here.
+  mailserver:
+    image: "ghcr.io/docker-mailserver/docker-mailserver:${MAILSERVER_VERSION}"
+    container_name: mailserver
+    hostname: ${MAIL_HOSTNAME}
+    restart: unless-stopped
+    environment:
+      - OVERRIDE_HOSTNAME=${MAIL_HOSTNAME}
+      - POSTMASTER_ADDRESS=${MAILBOX_ADDRESS}
+      # Self-signed cert generated on first start - fine for LAN testing.
+      # Get a real cert (Let's Encrypt) once this is internet-facing.
+      - SSL_TYPE=self-signed
+      # No trusted-network bypass - IMAP/SMTP submission both require real
+      # auth (see "First-time deploy" for account creation).
+      - PERMIT_DOCKER=none
+      - ENABLE_SPAMASSASSIN=0
+      - ENABLE_CLAMAV=0
+      - ENABLE_FAIL2BAN=0
+      - ONE_DIR=1
+    ports:
+      # SMTP (25) - inbound mail from whoever forwards a suspicious email.
+      # Submission (587, STARTTLS) - what Cortex's Mailer responder (on
+      # app02) authenticates against to send the verdict back.
+      # IMAP (993, implicit TLS) - what ThePhish-NG polls.
+      - "0.0.0.0:25:25"
+      - "0.0.0.0:587:587"
+      - "0.0.0.0:993:993"
+    volumes:
+      - ./mailserver/mail-data:/var/mail
+      - ./mailserver/mail-state:/var/mail-state
+      - ./mailserver/mail-logs:/var/log/mail
+      - ./mailserver/config:/tmp/docker-mailserver
+    networks:
+      - mail-server-network
+    # The image ships its own internal HEALTHCHECK - no need to redefine one.
+
+  thephish:
+    build: ./thephish
+    image: thephish/thephish-ng:1.0
+    container_name: thephish
+    restart: unless-stopped
+    environment:
+      - THEHIVE_WEB_URL=${THEHIVE_WEB_URL}
+      - CORTEX_WEB_URL=${CORTEX_WEB_URL}
+      - MISP_WEB_URL=${MISP_WEB_URL}
+      - IMAP_HOST=mailserver
+      - IMAP_PORT=993
+      - IMAP_TLS=tls
+      # mailserver's cert is self-signed (see SSL_TYPE above) - our own
+      # internal client has no CA to validate it against.
+      - IMAP_TLS_INSECURE=yes
+      - IMAP_USER=${MAILBOX_ADDRESS}
+      - IMAP_PASSWORD=${MAILBOX_PASSWORD}
+      - IMAP_FOLDER=INBOX
+      - THEHIVE_API_URL=${THEHIVE_API_URL}
+      - THEHIVE_API_KEY=${THEHIVE_API_KEY}
+      - THEHIVE_TLS_INSECURE=${THEHIVE_TLS_INSECURE}
+      - CORTEX_API_URL=${CORTEX_API_URL}
+      - CORTEX_API_KEY=${CORTEX_API_KEY}
+      - CORTEX_ID=local
+      - CORTEX_TLS_INSECURE=${CORTEX_TLS_INSECURE}
+      - MISP_ID=${MISP_ID}
+      - CASE_TLP=${CASE_TLP}
+      - CASE_PAP=${CASE_PAP}
+    ports:
+      # No auth on this UI (see README's known gaps) - keep it off the
+      # public interface until a reverse proxy with auth is put in front.
+      - "0.0.0.0:8080:8080"
+    depends_on:
+      - mailserver
+    networks:
+      - mail-server-network
+
+networks:
+  mail-server-network:

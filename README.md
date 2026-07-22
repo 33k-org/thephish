@@ -1,12 +1,14 @@
 # Self-hosted phishing/spam triage pipeline
 
 Users forward suspicious emails (as an EML attachment) to a dedicated
-mailbox. [ThePhish](https://github.com/emalderson/ThePhish) picks them up,
-extracts observables, and orchestrates analysis via Cortex + TheHive +
-MISP - including a custom Cortex analyzer that sends the email content to
-a local Ollama instance for LLM-based phishing/social-engineering
-analysis, as a signal alongside the existing threat-intel checks. The
-verdict is emailed back to whoever forwarded the message.
+mailbox. An analyst opens [ThePhish-NG](https://github.com/dead-plant/ThePhish-NG)'s
+web UI, lists the forwarded emails, and triggers analysis: it extracts
+observables and orchestrates analysis via Cortex + TheHive + MISP -
+including a custom Cortex analyzer that sends the email content to a local
+Ollama instance for LLM-based phishing/social-engineering analysis, as a
+signal alongside the existing threat-intel checks. The verdict is emailed
+back to whoever forwarded the message, via Cortex's own Mailer responder
+(see `mail-server/README.md` for why that split matters).
 
 ## Hosts
 
@@ -15,7 +17,7 @@ verdict is emailed back to whoever forwarded the message.
 | GPU box | Ollama (Qwen3 14B/32B), A5000 24GB VRAM, `0.0.0.0:11434` firewalled to app02 only | already built (outside this repo) |
 | `app01/` | TheHive + Cassandra + Elasticsearch | already built, being reconciled into this repo |
 | `app02/` | Cortex (+ its own Elasticsearch) + MISP + MariaDB + Redis + the Ollama analyzer | deployed, connected to app01 |
-| `mail-server/` | Postfix + Dovecot + ThePhish | not yet built |
+| `mail-server/` | Postfix + Dovecot + ThePhish-NG | built and validated locally - not yet deployed (planned: co-located on app02's host for testing) |
 
 Each host folder is self-contained: its own `docker-compose.yml`, its own
 `.env.example` (copy to `.env`, fill in real secrets, never commit `.env`
@@ -32,9 +34,12 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
    up, go back into app01's `thehive/conf/application.conf` and either
    uncomment the `cortex`/`misp` blocks or configure the connection via
    TheHive's UI (Platform management → Connectors).
-3. **mail-server** (ThePhish + Postfix/Dovecot) - depends on both app01
+3. **mail-server** (ThePhish-NG + Postfix/Dovecot) - depends on both app01
    and app02 being reachable (needs TheHive + Cortex + MISP API keys and
-   URLs). Built last.
+   URLs), and app02 needs its Mailer responder pointed back at this host
+   once it's up (see `app02/README.md`'s "The Mailer responder"). Built
+   last, for testing purposes co-located on app02's host rather than
+   dedicated hardware.
 
 ## Version compatibility notes
 
@@ -54,8 +59,10 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   [ThePhish-NG](https://github.com/dead-plant/ThePhish-NG)** (an actively
   maintained fork that explicitly adds TheHive 5 support via
   `thehive4py`/`cortex4py` 2.1.0). Its own setup docs are incomplete
-  ("coming soon" as of this writing), so expect more hands-on trial and
-  error when `mail-server/` gets built.
+  ("coming soon" as of this writing) and it ships no Docker image or
+  releases/tags - `mail-server/thephish/Dockerfile` builds it from a
+  pinned commit SHA instead. It also has no SMTP logic of its own; see
+  `mail-server/README.md` for how verdict emails actually get sent.
 - Versions currently pinned in `app01/.env.example`: TheHive 5.7.3,
   Cassandra 4.1.11, Elasticsearch 8.19.15 - StrangeBee's own currently
   pinned combination.
@@ -73,4 +80,8 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   Ollama analyzer (`ollama-analyzer/`) is enabled in Cortex and confirmed
   working end-to-end against the real GPU box (`qwen3:14b`), verdict +
   reasoning coming back correctly on a real submitted email.
-- `mail-server/` is scaffolding only.
+- `mail-server/` - built and validated locally (both images build, IMAP
+  login + a real SMTP-delivered test `.eml` round-tripped correctly through
+  ThePhish-NG's `/api/list`), but not yet deployed to the real host or
+  tested against real TheHive/Cortex credentials or a full
+  Cortex-driven analysis + Mailer responder send.

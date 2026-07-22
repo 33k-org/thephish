@@ -143,6 +143,10 @@ Cortex listens on `:9001`. Log in, then:
 3. **Organization → Users**: create a non-admin user for TheHive to
    authenticate as, then generate its API key - this is what goes into
    app01's `CORTEX_API_KEY`.
+4. **Organization → Responders**: enable `Mailer_1_0` - `from`/`smtp_host`/
+   `smtp_port`/`smtp_user`/`smtp_pwd` are pre-filled from `.env` if set (see
+   "The Mailer responder" below). This is what actually sends ThePhish-NG's
+   verdict emails once `mail-server/` is up.
 
 ### MISP - first login
 
@@ -200,6 +204,22 @@ JSON verdict ends up in Ollama's `thinking` field instead of `response`,
 which comes back empty (confirmed by testing live against a real Qwen3
 instance). The analyzer sends `"think": false` to avoid this - if you swap
 in a different reasoning model, verify it still respects that flag.
+
+### The Mailer responder
+
+ThePhish-NG has no SMTP logic of its own - every verdict email (and the
+"your submission is being analyzed" notification) is sent by starting
+Cortex's stock `Mailer_1_0` responder on a case task, via the TheHive/Cortex
+API (see `mail-server/README.md` for the full flow). `from`/`smtp_host`/
+`smtp_port`/`smtp_user`/`smtp_pwd` are pre-filled from `.env` the same way
+the analyzers' API keys are (`responder.config.Mailer` in
+`cortex/conf/application.conf`).
+
+Point it at `mail-server`'s submission port (587) using the same mailbox
+account ThePhish-NG polls via IMAP - see `mail-server/README.md`'s
+first-time deploy for creating that account. `Mailer_1_0` comes from
+StrangeBee's official responder catalog (already in `responder.urls`), so
+there's nothing to build here, just enable it (see "Cortex - first login").
 
 ### MISP's self-signed cert
 
