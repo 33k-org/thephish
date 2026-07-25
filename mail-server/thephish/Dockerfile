@@ -58,5 +58,12 @@ COPY config-template /opt/thephish-config-template
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# ThePhish-NG has no polling loop of its own - poller.sh calls its own
+# /api/list + /api/analysis HTTP API on a timer, same as a human clicking
+# through the UI. Runs as a separate container using this same image with
+# its entrypoint overridden - see docker-compose.yml's "poller" service.
+COPY poller.sh /poller.sh
+RUN chmod +x /poller.sh
+
 EXPOSE 8080
 ENTRYPOINT ["/entrypoint.sh"]

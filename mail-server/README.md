@@ -15,9 +15,12 @@ on the real host" below.
 ThePhish-NG is **not** an automatic poll-and-reply loop, and it has **no
 SMTP logic of its own**:
 
-1. A human opens ThePhish-NG's web UI (`:8080`, no login) and clicks
-   **List emails** - this polls the mailbox below over IMAP.
-2. They pick one and click **Analyze** - this creates a TheHive case,
+1. Something calls **`GET /api/list`** - this polls the mailbox below over
+   IMAP. In ThePhish-NG's own UI this is the "List emails" button; on this
+   deployment it's also done automatically by the `poller` service - see
+   "Automatic analysis" below.
+2. Something calls **`POST /api/analysis`** for a listed email (the UI's
+   **Analyze** button, or the poller) - this creates a TheHive case,
    extracts observables, and runs Cortex's enabled analyzers (including our
    Ollama one).
 3. The verdict email is sent by **starting Cortex's stock `Mailer_1_0`
@@ -25,22 +28,23 @@ SMTP logic of its own**:
    `app02/README.md`'s "The Mailer responder". `Mailer_1_0` does the actual
    `smtplib` send.
 
-So building this out means touching both this host (receive + human-driven
-analysis trigger) *and* app02 (enabling/configuring the Mailer responder).
-Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
-`MIMEText`, or similar anywhere in its own codebase.
+So building this out means touching both this host (receive + analysis
+trigger) *and* app02 (enabling/configuring the Mailer responder). Confirmed
+by reading ThePhish-NG's actual source - there's no `smtplib`, `MIMEText`,
+or similar anywhere in its own codebase, and no polling loop either (steps
+1-2 need something external calling its HTTP API - see "Automatic
+analysis" below for what does that on this deployment).
 
-Step 2 still needs a human (or a script) to call `/api/analysis` - there's
-no polling loop that does this on its own. Step 3, once triggered, is now
-fully automatic for **every** verdict including "Suspicious" - see
-"Auto-resolve every verdict, not just Malicious/Safe" below (upstream's
-own default only auto-replies for Malicious/Safe and leaves Suspicious
-open for manual review).
+Step 3, once triggered, is now fully automatic for **every** verdict
+including "Suspicious" - see "Auto-resolve every verdict, not just
+Malicious/Safe" below (upstream's own default only auto-replies for
+Malicious/Safe and leaves Suspicious open for manual review).
 
 ## What's here
 
 - `docker-compose.yml` - `mailserver` (Postfix + Dovecot, bundled) +
-  `thephish` (our own build of ThePhish-NG).
+  `thephish` (our own build of ThePhish-NG) + `poller` (same image,
+  entrypoint overridden - see "Automatic analysis" below).
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
@@ -66,7 +70,39 @@ open for manual review).
   see "Sender-domain allowlist" below. Tracked in git (unlike
   `mailserver/config`, which holds secrets/certs and is gitignored),
   layered into the same container path as individual file mounts.
+- `thephish/poller.sh` - calls ThePhish-NG's own `/api/list`/`/api/analysis`
+  HTTP API on a timer - see "Automatic analysis" below.
 - `.env.example` - copy to `.env` (gitignored) and fill in real values.
+
+## Automatic analysis
+
+ThePhish-NG has no polling loop of its own - by default, listing and
+analyzing emails both require a human clicking through the UI. This
+deployment wants the whole thing to run unattended, so `docker-compose.yml`
+adds a `poller` service: same `thephish` image, entrypoint overridden to
+run `thephish/poller.sh` instead of the Flask app. It's a plain loop, no
+patch to ThePhish-NG itself needed - it just calls the same HTTP API a
+human would:
+
+1. `GET /api/list`
+2. `POST /api/analysis` for each returned `mailUID`, one at a time -
+   sequential by design (waits for each to finish before starting the
+   next, and before the next `/api/list` poll), simpler to reason about
+   than concurrent runs for what's a low-volume triage mailbox
+3. Sleep `POLL_INTERVAL_SECONDS` (default 60), repeat
+
+Confirmed on a real deploy: brought the stack up with 5 emails already
+sitting in the mailbox from earlier testing (a mix of Malicious/Suspicious
+/Safe verdicts) - the poller picked all 5 up and worked through them
+automatically with no manual `/api/analysis` calls, each one going all the
+way through case creation, analysis, and the verdict/notification emails
+via the Mailer responder.
+
+Failures are logged and skipped rather than blocking the loop - a failed
+`/api/list` retries next cycle, a failed/timed-out `/api/analysis` (10
+minute cap) moves on to the next email rather than getting stuck. Restart
+policy is `unless-stopped`, same as the other services, so it comes back
+after a host reboot.
 
 ## A real gotcha found while building this: Postfix/Dovecot need TLS certs before they'll even start
 
@@ -398,9 +434,11 @@ infrastructure, not a hand-crafted test client, for delivery to succeed.
   anywhere less trusted (same "bring your own reverse proxy" stance already
   taken for TheHive/MISP in app01/app02).
 - **Not internet-facing yet** - no DNS MX record, no real TLS cert
-  (self-signed only), no SPF/DKIM/DMARC records published. Fine for testing
-  forwards from inside the LAN; needed before real employees can forward
-  mail from outside it.
+  (self-signed only). DKIM signing is configured (see "DKIM signing"
+  above) but the DNS TXT records (DKIM + a starting DMARC policy) haven't
+  been published yet - that's the domain owner's DNS zone, out of scope
+  for this repo. Fine for testing forwards from inside the LAN; needed
+  before real employees can forward mail from outside it.
 - **`docker-mailserver`'s spam/AV scanning is minimal** -
   `ENABLE_SPAMASSASSIN=0`/`ENABLE_CLAMAV=0` for now (this mailbox only ever
   receives deliberately-forwarded suspicious mail, so aggressive filtering

@@ -82,5 +82,22 @@ services:
     networks:
       - mail-server-network
 
+  # ThePhish-NG has no polling loop of its own (see README's "verdict-email
+  # flow" section) - this calls its /api/list + /api/analysis HTTP API on a
+  # timer instead of a human clicking through the UI. Same image as
+  # `thephish`, no separate build - just its entrypoint overridden to run
+  # poller.sh. See README's "Automatic analysis" section.
+  poller:
+    image: thephish/thephish-ng:1.0
+    container_name: thephish-poller
+    restart: unless-stopped
+    entrypoint: ["/poller.sh"]
+    environment:
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-60}
+    depends_on:
+      - thephish
+    networks:
+      - mail-server-network
+
 networks:
   mail-server-network:
