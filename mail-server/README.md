@@ -30,6 +30,13 @@ analysis trigger) *and* app02 (enabling/configuring the Mailer responder).
 Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
 `MIMEText`, or similar anywhere in its own codebase.
 
+Step 2 still needs a human (or a script) to call `/api/analysis` - there's
+no polling loop that does this on its own. Step 3, once triggered, is now
+fully automatic for **every** verdict including "Suspicious" - see
+"Auto-resolve every verdict, not just Malicious/Safe" below (upstream's
+own default only auto-replies for Malicious/Safe and leaves Suspicious
+open for manual review).
+
 ## What's here
 
 - `docker-compose.yml` - `mailserver` (Postfix + Dovecot, bundled) +
@@ -37,9 +44,11 @@ Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
-  deliberately to pick up upstream changes. Also applies a one-line `sed`
-  patch to `app/services/run_analysis.py` - see "A real gotcha: Ollama
-  never actually runs automatically" below.
+  deliberately to pick up upstream changes. Also applies three build-time
+  patches (a one-line `sed`, plus two Python scripts under
+  `thephish/patches/`) - see "A real gotcha: Ollama never actually runs
+  automatically", "Auto-resolve every verdict", and "Notify the sender on
+  the wrong forward format" below.
 - `thephish/config-template/` - ThePhish-NG's config format is plain JSON
   with no env-var substitution support. `configuration.json` (the only file
   with secrets) is rendered from environment variables at container start
@@ -169,6 +178,61 @@ rather than opening the check up to every enabled file-type analyzer -
 not all file analyzers are meaningful (or safe to run unattended) against
 a raw `.eml`.
 
+## Auto-resolve every verdict, not just Malicious/Safe
+
+Upstream's `run_analysis.py` only auto-closes the case and auto-sends the
+verdict email (via the Mailer responder) for **Malicious**/**Safe**
+verdicts - **Suspicious** is deliberately left `InProgress` with a
+placeholder task description
+(`---> INSERT BODY OF THE E-MAIL TO SEND <---`), for a human to write and
+send the reply by hand. Confirmed on a real deploy: a real forwarded
+newsletter got verdicted "Suspicious" and then just sat there - not
+hung, working as upstream intends, but not what this deployment wants.
+
+This deployment wants the whole pipeline to run unattended end-to-end
+regardless of verdict, always replying to whoever forwarded the email -
+see `thephish/patches/auto_resolve_all_verdicts.py` (applied at Docker
+build time, same mechanism as the Ollama patch above). Suspicious now
+takes the same auto-resolve+notify path as Malicious/Safe, closing the
+case with TheHive's `Indeterminate` resolution status (MISP export stays
+Malicious-only, unchanged - see the patch script for the exact diff).
+
+Confirmed on a real deploy with a deliberately ambiguous test email
+(a legitimate-looking "account activity" notification): verdicted
+Suspicious, "Notification mail sent" logged, case resolved as
+`Indeterminate` - no manual intervention needed.
+
+## Notify the sender on the wrong forward format
+
+ThePhish-NG only ever recognizes a forwarded email if it finds a
+`message/rfc822` (or `.eml`-decoded `application/octet-stream`) part
+while walking the MIME structure - i.e. **forwarded as an attachment**.
+If someone uses their mail client's default **"Forward"** instead (which
+pastes the original as quoted text in the body - Gmail, Outlook, Apple
+Mail all do this unless you explicitly pick "Forward as attachment"),
+`app/services/list_emails.py` silently drops it: never listed, never
+analyzed, no error anywhere, and it gets silently re-checked and
+re-skipped forever on every future poll since it's never marked seen.
+Confirmed on a real deploy - there's no existing notification for this
+anywhere in ThePhish-NG's own code.
+
+Patched via `thephish/patches/notify_wrong_format.py` (applied at Docker
+build time, same mechanism as the other two patches above):
+`list_emails.py` now sends the sender a one-time notice explaining the
+email needs to be forwarded as an attachment, then marks the message seen
+so it isn't rechecked forever. Deliberately **bypasses TheHive/Cortex/
+Mailer_1_0 entirely** and sends directly over SMTP using this mailbox's
+own IMAP credentials (`config['imap']`, read the same way
+`app/utils/imap_pool.py` does) - there's no case or observable to hang a
+Mailer responder action off for a submission that was never actually
+processed, and creating a throwaway case/alert just to reuse `Mailer_1_0`
+would add TheHive noise for something that isn't an analysis result.
+
+Confirmed on a real deploy: an inline-forwarded test message correctly
+triggered `Sent wrong-format notice to <sender> for message <uid>` in the
+logs, the notice was delivered (mailbox size grew), and the message no
+longer reappears in `/api/list` on subsequent polls.
+
 ## Sender-domain allowlist
 
 Before exposing port 25 to the internet: **not being an open relay is not
@@ -207,8 +271,42 @@ that's the entire point of this mailbox. It only restricts who's allowed
 to forward mail to us in the first place, i.e. the outer envelope sender.
 
 To add a domain: append a line to `postfix-config/sender-domain-allowlist`
-(`example.com OK`) and `docker compose up -d mailserver` to pick it up -
-no rebuild needed, it's a live file mount.
+(`example.com OK`). No rebuild needed - it's a file mount, not baked into
+an image - but **use `docker compose up -d mailserver --force-recreate`**,
+not a plain `up -d` or `restart`. Confirmed on a real deploy: editing the
+file via a tool that replaces it (e.g. `scp`, `sed -i`'s default temp-file
+swap) changes its inode, which silently detaches it from a *single-file*
+bind mount (unlike a directory mount, which follows the path) - the
+running container keeps serving the old content with no error, until the
+container is recreated so the mount re-resolves.
+
+## DKIM signing (needed for real deliverability)
+
+`docker-mailserver` ships OpenDKIM enabled by default - it just needs a
+keypair generated for the mailbox's domain (the parent domain, not
+`MAIL_HOSTNAME` - see the domain-collision gotcha above). Confirmed on a
+real deploy this is what actually fixes DMARC rejections at strict
+receivers (Gmail rejected our unsigned outbound mail with `Unauthenticated
+email ... not accepted due to domain's DMARC policy` before this):
+
+```bash
+docker exec mailserver setup config dkim domain "<your mailbox's domain>"
+docker compose up -d mailserver --force-recreate
+```
+
+This writes the keypair under `mailserver/config/opendkim/` (gitignored,
+same as the TLS cert - it's a private key) and prints the DNS `TXT`
+record to publish at `mail._domainkey.<domain>`. Confirmed signing is
+active: `docker logs mailserver | grep -i dkim` shows `DKIM-Signature
+field added (s=mail, d=<domain>)` on outbound mail.
+
+DKIM alone doesn't complete the picture - SPF (a `TXT` record on the
+domain itself, authorizing this server's sending IP) and a DMARC policy
+record (`_dmarc.<domain>`, referencing DKIM/SPF alignment - a reasonable
+starting point is `v=DMARC1; p=none; adkim=r; aspf=r; pct=100`, monitoring
+before enforcing) both need to be published in DNS too - out of scope for
+this repo/host, they're the domain owner's DNS zone, not anything this
+mail server serves itself.
 
 ## First-time deploy
 
@@ -246,6 +344,13 @@ docker compose up -d mailserver
 # account. Same address used for both IMAP (ThePhish-NG polling) and SMTP
 # submission (Cortex's Mailer responder) - see MAILBOX_ADDRESS in .env.
 docker exec mailserver setup email add "$MAILBOX_ADDRESS" "$MAILBOX_PASSWORD"
+
+# DKIM signing - see "DKIM signing" above for the DNS records this prints
+# out and why it matters (without it, real DMARC-enforcing receivers like
+# Gmail reject outbound verdict/notification mail outright).
+MAILBOX_DOMAIN=${MAILBOX_ADDRESS#*@}
+docker exec mailserver setup config dkim domain "$MAILBOX_DOMAIN"
+docker compose up -d mailserver --force-recreate
 
 docker compose up -d thephish
 ```
