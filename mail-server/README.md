@@ -30,6 +30,13 @@ analysis trigger) *and* app02 (enabling/configuring the Mailer responder).
 Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
 `MIMEText`, or similar anywhere in its own codebase.
 
+Step 2 still needs a human (or a script) to call `/api/analysis` - there's
+no polling loop that does this on its own. Step 3, once triggered, is now
+fully automatic for **every** verdict including "Suspicious" - see
+"Auto-resolve every verdict, not just Malicious/Safe" below (upstream's
+own default only auto-replies for Malicious/Safe and leaves Suspicious
+open for manual review).
+
 ## What's here
 
 - `docker-compose.yml` - `mailserver` (Postfix + Dovecot, bundled) +
@@ -169,6 +176,30 @@ rather than opening the check up to every enabled file-type analyzer -
 not all file analyzers are meaningful (or safe to run unattended) against
 a raw `.eml`.
 
+## Auto-resolve every verdict, not just Malicious/Safe
+
+Upstream's `run_analysis.py` only auto-closes the case and auto-sends the
+verdict email (via the Mailer responder) for **Malicious**/**Safe**
+verdicts - **Suspicious** is deliberately left `InProgress` with a
+placeholder task description
+(`---> INSERT BODY OF THE E-MAIL TO SEND <---`), for a human to write and
+send the reply by hand. Confirmed on a real deploy: a real forwarded
+newsletter got verdicted "Suspicious" and then just sat there - not
+hung, working as upstream intends, but not what this deployment wants.
+
+This deployment wants the whole pipeline to run unattended end-to-end
+regardless of verdict, always replying to whoever forwarded the email -
+see `thephish/patches/auto_resolve_all_verdicts.py` (applied at Docker
+build time, same mechanism as the Ollama patch above). Suspicious now
+takes the same auto-resolve+notify path as Malicious/Safe, closing the
+case with TheHive's `Indeterminate` resolution status (MISP export stays
+Malicious-only, unchanged - see the patch script for the exact diff).
+
+Confirmed on a real deploy with a deliberately ambiguous test email
+(a legitimate-looking "account activity" notification): verdicted
+Suspicious, "Notification mail sent" logged, case resolved as
+`Indeterminate` - no manual intervention needed.
+
 ## Sender-domain allowlist
 
 Before exposing port 25 to the internet: **not being an open relay is not
@@ -207,8 +238,14 @@ that's the entire point of this mailbox. It only restricts who's allowed
 to forward mail to us in the first place, i.e. the outer envelope sender.
 
 To add a domain: append a line to `postfix-config/sender-domain-allowlist`
-(`example.com OK`) and `docker compose up -d mailserver` to pick it up -
-no rebuild needed, it's a live file mount.
+(`example.com OK`). No rebuild needed - it's a file mount, not baked into
+an image - but **use `docker compose up -d mailserver --force-recreate`**,
+not a plain `up -d` or `restart`. Confirmed on a real deploy: editing the
+file via a tool that replaces it (e.g. `scp`, `sed -i`'s default temp-file
+swap) changes its inode, which silently detaches it from a *single-file*
+bind mount (unlike a directory mount, which follows the path) - the
+running container keeps serving the old content with no error, until the
+container is recreated so the mount re-resolves.
 
 ## First-time deploy
 

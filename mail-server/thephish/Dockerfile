@@ -29,6 +29,15 @@ RUN sed -i \
       app/services/run_analysis.py \
     && grep -q "Ollama_Phishing_Analysis_1_0" app/services/run_analysis.py
 
+# Upstream only auto-resolves the case and auto-sends the verdict email for
+# "Malicious"/"Safe" - "Suspicious" is deliberately left open for a human to
+# write and send the reply by hand. This deployment wants the whole pipeline
+# to run unattended end-to-end regardless of verdict, always replying to the
+# sender - see patches/auto_resolve_all_verdicts.py for the exact change.
+COPY patches/auto_resolve_all_verdicts.py /tmp/auto_resolve_all_verdicts.py
+RUN python3 /tmp/auto_resolve_all_verdicts.py \
+    && grep -q "elif verdict == 'Suspicious':" app/services/run_analysis.py
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Real config (with secrets) is rendered from these templates at container
