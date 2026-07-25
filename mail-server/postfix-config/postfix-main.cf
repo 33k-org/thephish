@@ -1,0 +1,16 @@
+# docker-mailserver override file (docs: config/advanced/override-defaults/postfix)
+# - appended to /etc/postfix/main.cf at container start.
+#
+# Restrict who is allowed to SEND mail INTO this server, by sender domain -
+# see sender-domain-allowlist for the actual list. Postfix evaluates sender
+# restrictions at MAIL FROM, separately from (and in addition to) the
+# existing recipient-side restrictions that already prevent this server
+# being used as an open relay (see mail-server/README.md).
+#
+# permit_sasl_authenticated / permit_mynetworks come first so our own
+# authenticated senders (Cortex's Mailer responder submitting outbound,
+# any future authenticated client) are never affected by this allowlist -
+# it only restricts anonymous/unauthenticated inbound mail (port 25).
+# Anything not explicitly OK'd by the allowlist is rejected outright,
+# rather than falling through to any other check.
+dms_smtpd_sender_restrictions = permit_sasl_authenticated, permit_mynetworks, check_sender_access texthash:/tmp/docker-mailserver/sender-domain-allowlist, reject

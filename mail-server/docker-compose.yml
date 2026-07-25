@@ -35,6 +35,12 @@ services:
       - ./mailserver/mail-state:/var/mail-state
       - ./mailserver/mail-logs:/var/log/mail
       - ./mailserver/config:/tmp/docker-mailserver
+      # Sender-domain allowlist (tracked in git, unlike ./mailserver/config
+      # which is gitignored runtime/secret state) - layered on top of the
+      # directory mount above. See postfix-config/sender-domain-allowlist
+      # and README's "Sender-domain allowlist" section.
+      - ./postfix-config/postfix-main.cf:/tmp/docker-mailserver/postfix-main.cf:ro
+      - ./postfix-config/sender-domain-allowlist:/tmp/docker-mailserver/sender-domain-allowlist:ro
     networks:
       - mail-server-network
     # The image ships its own internal HEALTHCHECK - no need to redefine one.

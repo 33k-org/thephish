@@ -53,6 +53,10 @@ Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
     "info" for a noisy one); unlisted analyzers (all of ours) just keep
     their own reported level unchanged, confirmed by reading
     `app/utils/analyzer_levels.py`'s `map_level()`.
+- `postfix-config/` - sender-domain allowlist for inbound mail on port 25 -
+  see "Sender-domain allowlist" below. Tracked in git (unlike
+  `mailserver/config`, which holds secrets/certs and is gitignored),
+  layered into the same container path as individual file mounts.
 - `.env.example` - copy to `.env` (gitignored) and fill in real values.
 
 ## A real gotcha found while building this: Postfix/Dovecot need TLS certs before they'll even start
@@ -164,6 +168,47 @@ Fixed by patching that one condition at Docker build time (see
 rather than opening the check up to every enabled file-type analyzer -
 not all file analyzers are meaningful (or safe to run unattended) against
 a raw `.eml`.
+
+## Sender-domain allowlist
+
+Before exposing port 25 to the internet: **not being an open relay is not
+the same as controlling who can send you mail.** This server was already
+confirmed not to be an open relay (`mynetworks` empty, `permit_mynetworks
+permit_sasl_authenticated defer_unauth_destination` in
+`smtpd_relay_restrictions`, `reject_unauth_destination` in
+`smtpd_recipient_restrictions` - an anonymous sender can only ever deliver
+*to* this server's one mailbox, never relay *through* it). But by default
+anyone on the internet can still send mail *to* `phishing@pwned.email`.
+
+`postfix-config/sender-domain-allowlist` restricts that: only sender
+domains listed there are accepted on port 25 (unauthenticated inbound) -
+everything else is rejected outright with `554 5.7.1 ... Access denied`,
+by design (deny-by-default, not a denylist). Wired in via
+`postfix-config/postfix-main.cf`'s `dms_smtpd_sender_restrictions`
+override (docker-mailserver's supported mechanism for extending
+`main.cf` - see their "Override the Default Configs" docs).
+
+Confirmed on a real deploy: a message from a domain not on the list gets
+`Access denied` at the sender-restriction stage; a message from an
+allowlisted domain passes that stage and falls through to the existing
+SPF check (`reject`ed there instead, since it wasn't actually sent from
+that domain's real mail infrastructure) - the two checks are independent
+layers, both need to pass for a real forward to get through.
+
+**Doesn't affect authenticated submission (port 587)** -
+`permit_sasl_authenticated` is checked first in the restriction chain, so
+Cortex's Mailer responder (and the `send_test_phish.py`-style test
+pattern used during development) are unaffected regardless of sender
+domain, since they authenticate as the mailbox account itself.
+
+This also does **not** restrict what domain appears inside a *forwarded*
+phishing email's own `From` header (the attacker's lookalike domain) -
+that's the entire point of this mailbox. It only restricts who's allowed
+to forward mail to us in the first place, i.e. the outer envelope sender.
+
+To add a domain: append a line to `postfix-config/sender-domain-allowlist`
+(`example.com OK`) and `docker compose up -d mailserver` to pick it up -
+no rebuild needed, it's a live file mount.
 
 ## First-time deploy
 
