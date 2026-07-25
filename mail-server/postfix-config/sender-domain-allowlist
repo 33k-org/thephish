@@ -1,0 +1,16 @@
+# Sender-domain allowlist for inbound mail to this triage mailbox
+# (phishing@pwned.email). Loaded by postfix-main.cf's
+# dms_smtpd_sender_restrictions override.
+#
+# Format: Postfix access-map entries, one per line - "domain  OK".
+# Postfix matches parent domains automatically (e.g. an entry for
+# "33k.org" also matches mail from user@mail.33k.org). Any sender domain
+# NOT listed here is rejected outright - this is an allowlist, not a
+# denylist, by design (see the conversation that added this: the ask was
+# specifically "everything else is deny").
+#
+# This does NOT restrict what the attacker/lookalike domain inside a
+# forwarded phishing email can be - that's the whole point of this
+# mailbox. It only restricts who can forward mail to us in the first
+# place (i.e. the outer envelope sender - real employees).
+33k.org OK
