@@ -48,6 +48,29 @@ COPY patches/notify_wrong_format.py /tmp/notify_wrong_format.py
 RUN python3 /tmp/notify_wrong_format.py \
     && grep -q "def notify_wrong_format" app/services/list_emails.py
 
+# Recover a forwarded email from inline-quoted body text (the default
+# "Forward" in most mail clients pastes the original as quoted text
+# rather than attaching it), instead of just telling the sender to
+# resend as an attachment - "cut the last forward and create the eml
+# file from the rest". New shared module, plus wiring into both
+# list_emails.py (listing) and case_from_email.py (actual analysis) -
+# must run after notify_wrong_format.py above (patches
+# list_emails.py's same eml_attachment_found check).
+COPY patches/inline_forward.py app/utils/inline_forward.py
+COPY patches/enable_inline_forward.py /tmp/enable_inline_forward.py
+RUN python3 /tmp/enable_inline_forward.py \
+    && grep -q "inline_forward.extract" app/services/list_emails.py \
+    && grep -q "inline_forward.extract" app/services/case_from_email.py
+
+# Upstream's verdict-email body is a single bare sentence with no
+# reasoning or indication of what was actually flagged. Pull in our own
+# Ollama analyzer's reasoning/confidence (already computed, previously
+# just discarded) and a list of flagged observables for a more useful
+# reply - see patches/detailed_verdict_email.py for the exact change.
+COPY patches/detailed_verdict_email.py /tmp/detailed_verdict_email.py
+RUN python3 /tmp/detailed_verdict_email.py \
+    && grep -q "Automated analysis findings" app/services/run_analysis.py
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Real config (with secrets) is rendered from these templates at container

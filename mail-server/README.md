@@ -48,11 +48,12 @@ Malicious/Safe and leaves Suspicious open for manual review).
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
-  deliberately to pick up upstream changes. Also applies three build-time
-  patches (a one-line `sed`, plus two Python scripts under
-  `thephish/patches/`) - see "A real gotcha: Ollama never actually runs
-  automatically", "Auto-resolve every verdict", and "Notify the sender on
-  the wrong forward format" below.
+  deliberately to pick up upstream changes. Also applies several
+  build-time patches (a one-line `sed`, plus Python scripts under
+  `thephish/patches/`, applied in a specific order the Dockerfile
+  comments call out) - see "A real gotcha: Ollama never actually runs
+  automatically", "Auto-resolve every verdict", "Recover forwarded emails
+  from inline quoting", and "A detailed verdict-email body" below.
 - `thephish/config-template/` - ThePhish-NG's config format is plain JSON
   with no env-var substitution support. `configuration.json` (the only file
   with secrets) is rendered from environment variables at container start
@@ -238,7 +239,7 @@ Confirmed on a real deploy with a deliberately ambiguous test email
 Suspicious, "Notification mail sent" logged, case resolved as
 `Indeterminate` - no manual intervention needed.
 
-## Notify the sender on the wrong forward format
+## Recover forwarded emails from inline quoting
 
 ThePhish-NG only ever recognizes a forwarded email if it finds a
 `message/rfc822` (or `.eml`-decoded `application/octet-stream`) part
@@ -247,27 +248,101 @@ If someone uses their mail client's default **"Forward"** instead (which
 pastes the original as quoted text in the body - Gmail, Outlook, Apple
 Mail all do this unless you explicitly pick "Forward as attachment"),
 `app/services/list_emails.py` silently drops it: never listed, never
-analyzed, no error anywhere, and it gets silently re-checked and
-re-skipped forever on every future poll since it's never marked seen.
-Confirmed on a real deploy - there's no existing notification for this
-anywhere in ThePhish-NG's own code.
+analyzed, no error anywhere, re-checked and re-skipped forever on every
+future poll. Confirmed on a real deploy - there's no existing handling
+for this anywhere in ThePhish-NG's own code, and asking everyone who
+forwards a suspicious email to remember "as attachment, not inline" isn't
+realistic.
 
-Patched via `thephish/patches/notify_wrong_format.py` (applied at Docker
-build time, same mechanism as the other two patches above):
-`list_emails.py` now sends the sender a one-time notice explaining the
-email needs to be forwarded as an attachment, then marks the message seen
-so it isn't rechecked forever. Deliberately **bypasses TheHive/Cortex/
-Mailer_1_0 entirely** and sends directly over SMTP using this mailbox's
-own IMAP credentials (`config['imap']`, read the same way
-`app/utils/imap_pool.py` does) - there's no case or observable to hang a
-Mailer responder action off for a submission that was never actually
-processed, and creating a throwaway case/alert just to reuse `Mailer_1_0`
-would add TheHive noise for something that isn't an analysis result.
+`app/utils/inline_forward.py` (new module, copied in - not a patch to an
+existing file) does what was asked: finds the **last** recognized
+forward-marker line in the body (Gmail's `---------- Forwarded message
+---------`, Outlook's `-----Original Message-----`, Apple Mail's `Begin
+forwarded message:` - last, not first, to correctly handle chained/nested
+forwards by taking the innermost original), and synthesizes an
+`email.message.Message` from everything after it - "cut the last forward
+and create the eml file from the rest". The header block right after the
+marker (`From:`/`Date:`/`Subject:`) is usually itself valid RFC822, so
+this just feeds it to Python's own email parser rather than hand-rolling
+one; falls back to a placeholder-headers message if that doesn't produce
+a `Subject`/`From`, and gives up (returns `None`) entirely if no marker
+is found at all - deliberately narrow, rather than guessing wrong and
+mis-attributing content.
 
-Confirmed on a real deploy: an inline-forwarded test message correctly
-triggered `Sent wrong-format notice to <sender> for message <uid>` in the
-logs, the notice was delivered (mailbox size grew), and the message no
-longer reappears in `/api/list` on subsequent polls.
+Wired into both places that need it via `thephish/patches/enable_inline_forward.py`
+(must run after `notify_wrong_format.py` below - the Dockerfile enforces
+the order): `list_emails.py` (so the email is listable at all) and
+`case_from_email.py`'s `obtain_eml()` (so the synthesized message is what
+actually gets analyzed - same downstream code path as a real attachment,
+confirmed by reading `case_from_email.py`'s `BytesGenerator(...).flatten()`
+call, which works on any `email.message.Message`, not just ones parsed
+from real attachment bytes).
+
+Confirmed on a real deploy: a hand-crafted inline-forwarded phishing test
+(Gmail-style `---------- Forwarded message ----------` marker) was
+correctly recognized, listed with the *inner* subject, and fully analyzed
+- verdict Malicious, with the sender/domain observables correctly
+extracted from the recovered message, not the outer "Fwd:" wrapper.
+
+### If recovery fails: notify the sender
+
+When no forward marker is found at all (`inline_forward.extract()`
+returns `None`), `thephish/patches/notify_wrong_format.py` sends the
+sender a one-time notice explaining the email needs to be forwarded as an
+attachment, then marks the message seen so it isn't rechecked forever.
+Deliberately **bypasses TheHive/Cortex/Mailer_1_0 entirely** and sends
+directly over SMTP using this mailbox's own IMAP credentials
+(`config['imap']`, read the same way `app/utils/imap_pool.py` does) -
+there's no case or observable to hang a Mailer responder action off for a
+submission that was never actually processed.
+
+**A real self-notify loop, found and fixed during testing**: every
+verdict/notification email (and every wrong-format notice itself) is
+just another message with no `.eml` attachment - if `mail_to` for any of
+them ever resolves back to this mailbox's own address (self-testing by
+sending from/to the same account, as this repo's test scripts do; in
+production this would only happen if an employee's `From` somehow
+resolved back to the triage mailbox itself), each one triggers another
+wrong-format notice, which lands back in the same mailbox, which triggers
+another, forever - confirmed live: this actually ran away during
+development, generating dozens of notices before being caught and fixed.
+Fixed by skipping the notice entirely (but still marking the message
+seen) whenever the sender address matches this mailbox's own
+`config['imap']['user']`.
+
+## A detailed verdict-email body, not a bare one-liner
+
+Upstream's verdict-email body is a single sentence: "Thanks for your
+submission. The e-mail with subject [X] you submitted has been classified
+as Y." No reasoning, no indication of what was actually flagged - even
+though our own Ollama analyzer already computes exactly that
+(`reasons`/`confidence` - see `ollama-analyzer/Ollama/ollama_analyzer.py`'s
+`self.report()` call) and upstream was just discarding it after using it
+to compute the level.
+
+`thephish/patches/detailed_verdict_email.py` (applied at Docker build
+time) captures those fields where they're already being read
+(`analyze_observables()`) and builds a real reply body from them in
+`terminate_analysis()`: the verdict line, then Ollama's own bullet-point
+reasoning with its confidence score, then a list of whichever observables
+were flagged malicious/suspicious. Confirmed on a real deploy - example
+verdict email body, sent for the recovered inline-forward test above:
+
+```
+Thanks for your submission.
+
+The e-mail with subject [Urgent: Your account will be suspended - verify now] you submitted has been classified as Malicious.
+
+Automated analysis findings (confidence: 95%):
+- The email uses a fake domain (paypa1-verify.com) that closely resembles a legitimate PayPal domain (paypal.com).
+- The subject line creates urgency and fear to manipulate the recipient into taking immediate action.
+- The link provided is suspicious and not associated with any official PayPal verification process.
+- The 'from' email address is not a standard PayPal security email address.
+- The email lacks proper personalization and is generic, which is common in phishing attempts.
+
+Flagged items:
+- file_message/rfc822: thephish_1t5k1x76_Urgent: Your account will be suspended - verify now.eml (malicious)
+```
 
 ## Sender-domain allowlist
 
