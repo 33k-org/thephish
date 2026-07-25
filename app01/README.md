@@ -49,6 +49,17 @@ will be left without a valid license once it lapses. A Community
 license is all this pipeline needs; no paid Enterprise tier is
 required.
 
+## Creating a service account for ThePhish-NG (`mail-server`)
+
+`mail-server/`'s ThePhish-NG needs its own TheHive user and API key
+(`THEHIVE_API_KEY` in `mail-server/.env`). **It needs the `org-admin`
+profile, not `analyst`** - confirmed on a real deploy: with `analyst`,
+case creation fails with `AuthorizationError ... you don't have the
+permission manageCaseTemplate`, because ThePhish-NG creates/uses a case
+template on first use and only `org-admin` includes that permission.
+Administration → Users → new user (e.g. `thephish-ng`) → profile
+`org-admin` → generate its API key.
+
 ## Connecting app02 (Cortex + MISP)
 
 `thehive/conf/application.conf`'s `cortex`/`misp` blocks are already

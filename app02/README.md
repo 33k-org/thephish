@@ -221,6 +221,22 @@ first-time deploy for creating that account. `Mailer_1_0` comes from
 StrangeBee's official responder catalog (already in `responder.urls`), so
 there's nothing to build here, just enable it (see "Cortex - first login").
 
+**Needs a custom-built image to trust `mail-server`'s self-signed cert** -
+see `mail-server/README.md`'s "Cortex's Mailer responder can't send
+through a self-signed cert" gotcha for why and how to build it
+(`thephish/mailer-ca:1`). Unlike the Ollama analyzer's local-only image,
+`ghcr.io/thehive-project/mailer:1` is a real image on a real registry, so
+Cortex's `docker.autoUpdate` pull-before-run will silently overwrite a
+same-named local override on the next job - confirmed on a real deploy,
+the Mailer responder started failing again after working once, because it
+was re-pulling the genuine (non-CA-trusting) upstream image. Use a
+distinctly-named tag (`thephish/mailer-ca:1`, not
+`ghcr.io/thehive-project/mailer:1`) and point the responder at it via
+`PATCH /api/responder/:id` with `{"dockerImage": "thephish/mailer-ca:1"}`
+(Cortex's UI has no field for a responder's Docker image) - Cortex's
+pull-before-run for a name that has no real remote counterpart fails
+harmlessly and falls back to the local build, same as the Ollama analyzer.
+
 ### MISP's self-signed cert
 
 MISP's own image terminates TLS itself via a bundled nginx + a self-signed
