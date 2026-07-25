@@ -15,6 +15,20 @@ WORKDIR /opt/thephish
 RUN curl -fsSL "https://github.com/dead-plant/ThePhish-NG/archive/${THEPHISH_NG_COMMIT}.tar.gz" \
       | tar -xz --strip-components=1
 
+# Upstream only ever auto-triggers Yara_3_0 on the forwarded .eml's file
+# observable (app/services/run_analysis.py) - there's no generic "run every
+# enabled file-type analyzer" path for it, unlike url/domain/mail/ip/hash
+# observables. That silently excludes our own Ollama_Phishing_Analysis_1_0
+# analyzer (also a file-type analyzer) from ever running automatically via
+# the normal "Analyze" button - confirmed live: case/observable/Mailer all
+# worked, but Ollama never got triggered until this patch. Explicitly add
+# it alongside Yara rather than opening the check up to every enabled file
+# analyzer, since not all file analyzers are meaningful on a raw .eml.
+RUN sed -i \
+      "s/if analyzer.name == 'Yara_3_0':/if analyzer.name in ('Yara_3_0', 'Ollama_Phishing_Analysis_1_0'):/" \
+      app/services/run_analysis.py \
+    && grep -q "Ollama_Phishing_Analysis_1_0" app/services/run_analysis.py
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Real config (with secrets) is rendered from these templates at container

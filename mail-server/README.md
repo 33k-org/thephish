@@ -7,6 +7,8 @@ orchestrates TheHive/Cortex/MISP and drives the actual verdict.
 **Deployed for testing on app02's host** (not a dedicated third host yet) -
 this is still a fully self-contained `docker-compose.yml` project, so it
 can be moved to its own hardware later without changing anything here.
+Confirmed working end-to-end on the real host - see "Validated end-to-end
+on the real host" below.
 
 ## The actual verdict-email flow (important, non-obvious)
 
@@ -35,7 +37,9 @@ Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
-  deliberately to pick up upstream changes.
+  deliberately to pick up upstream changes. Also applies a one-line `sed`
+  patch to `app/services/run_analysis.py` - see "A real gotcha: Ollama
+  never actually runs automatically" below.
 - `thephish/config-template/` - ThePhish-NG's config format is plain JSON
   with no env-var substitution support. `configuration.json` (the only file
   with secrets) is rendered from environment variables at container start
@@ -66,13 +70,111 @@ least one mailbox account exists**, and gives you exactly 120 seconds after
 first start to create one before it shuts itself down - see "First-time
 deploy".
 
+## A real gotcha found on a real deploy: `MAIL_HOSTNAME` and the mailbox domain must be different
+
+Setting `MAIL_HOSTNAME` and the mailbox's domain to the *same* value (e.g.
+both `mail.pwned.email`) breaks inbound delivery. Postfix always adds its
+own `$myhostname` (`MAIL_HOSTNAME`) to `mydestination` (local/system-user
+delivery), so if that's also your virtual mailbox domain, Postfix can't
+tell whether an address in that domain should be delivered locally (as a
+Unix user) or virtually (as a docker-mailserver account) - it picks local,
+finds no matching Unix user, and rejects with `550 5.1.1 ... User unknown
+in local recipient table`, even though `setup email list` shows the
+account existing fine.
+
+Fix: use the conventional split - `MAIL_HOSTNAME` is the server's own FQDN
+(`mail.pwned.email`), the mailbox address is under the **parent** domain
+(`phishing@pwned.email`, not `phishing@mail.pwned.email`). Confirmed fixed
+by recreating the mailbox account under the parent domain; `postconf -h
+mydestination` no longer overlaps `postconf -h virtual_mailbox_domains`
+(`cat /etc/postfix/vhost` inside the container) after the fix.
+
+## A real gotcha found on a real deploy: Cortex's Mailer responder can't send through a self-signed cert
+
+Cortex's stock `Mailer_1_0` responder (`cortexutils`/`smtplib`) uses
+`ssl.create_default_context()` for STARTTLS with **no way to disable
+verification** via its config - unlike everywhere else in this repo, there
+is no `tlsinsecure`-style escape hatch here. Against `mailserver`'s
+self-signed cert this fails closed in a confusing way: the cert
+verification error is swallowed by Mailer's own fallback logic, which
+retries over a *plaintext* connection - but `docker-mailserver`'s
+submission port (587) mandates TLS before `AUTH` is even offered
+(`smtpd_tls_security_level=encrypt` on that port only), so the fallback
+also fails, surfacing as `SMTPNotSupportedError: SMTP AUTH extension not
+supported by server` - a red herring that looks like an auth problem, not
+a TLS trust problem. Also confirmed: docker-mailserver only copies a
+`SSL_TYPE=self-signed` cert into its actual serving location
+(`/etc/dms/tls/`) on the container's **first ever boot** - a plain
+`docker compose restart` after regenerating the cert does *not* pick up
+the new files; either `docker cp` them into `/etc/dms/tls/` and `postfix
+reload`, or fully recreate the container.
+
+Fix (three parts, all needed):
+
+1. Generate the self-signed cert with a `subjectAltName` covering *both*
+   the hostname and whatever address Cortex actually dials
+   (`MAILER_SMTP_HOST` in `app02/.env` - an IP if there's no internal DNS
+   yet), e.g.:
+   ```bash
+   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+     -keyout "mailserver/config/ssl/${FQDN}-key.pem" \
+     -out "mailserver/config/ssl/${FQDN}-cert.pem" \
+     -subj "/CN=${FQDN}" \
+     -addext "subjectAltName=DNS:${FQDN},IP:${MAILER_SMTP_HOST_IP}"
+   ```
+2. Build a small variant of Cortex's Mailer image that trusts this cert's
+   CA and point the enabled responder at it (Cortex's own UI has no field
+   for a responder's Docker image, so this is done once via API - see
+   `app02/README.md`'s "The Mailer responder"):
+   ```bash
+   mkdir -p /tmp/mailer-ca-build && cd /tmp/mailer-ca-build
+   cp path/to/mailserver/config/ssl/${FQDN}-cert.pem .
+   cat > Dockerfile <<EOF
+   FROM ghcr.io/thehive-project/mailer:1
+   COPY ${FQDN}-cert.pem /usr/local/share/ca-certificates/mail-server.crt
+   RUN update-ca-certificates
+   EOF
+   docker build -t thephish/mailer-ca:1 .
+   ```
+3. Whenever the cert is regenerated, both the mail server's `/etc/dms/tls/`
+   copy *and* this image need rebuilding/refreshing - they'll silently
+   drift out of sync otherwise.
+
+This is a one-time deploy-time cost, not something `docker compose up`
+handles by itself - reasonable for LAN testing with a self-signed cert;
+switching to a real CA-issued cert (Let's Encrypt) once this is
+internet-facing removes the need for the custom image entirely.
+
+## A real gotcha found on a real deploy: Ollama never actually runs automatically
+
+ThePhish-NG's own `app/services/run_analysis.py` only ever auto-triggers
+**`Yara_3_0`, by hardcoded name**, on the forwarded email's file/EML
+observable - unlike url/domain/mail/ip/hash observables, there is no
+generic "run every enabled analyzer of this type" path for it. Since this
+repo doesn't enable Yara, and our own `Ollama_Phishing_Analysis_1_0`
+analyzer is also a file-type analyzer, it was **silently never triggered**
+by the normal "Analyze" button - confirmed on a real end-to-end run:
+case/observable creation and the Mailer responder all worked, but Cortex's
+job history showed zero Ollama jobs tied to the new case, and the verdict
+came back "Safe" purely because nothing had actually analyzed the email
+content.
+
+Fixed by patching that one condition at Docker build time (see
+`thephish/Dockerfile`) to also match `Ollama_Phishing_Analysis_1_0`,
+rather than opening the check up to every enabled file-type analyzer -
+not all file analyzers are meaningful (or safe to run unattended) against
+a raw `.eml`.
+
 ## First-time deploy
 
 ```bash
 cp .env.example .env
-# Edit .env: MAIL_HOSTNAME, MAILBOX_ADDRESS/MAILBOX_PASSWORD, and the
-# THEHIVE_*/CORTEX_*/MISP_* values (API keys from app01/app02's own
-# first-login steps).
+# Edit .env: MAIL_HOSTNAME (this server's own FQDN, e.g. mail.example.com),
+# MAILBOX_ADDRESS (under the PARENT domain, e.g. phishing@example.com -
+# see the MAIL_HOSTNAME/mailbox-domain gotcha above)/MAILBOX_PASSWORD, and
+# the THEHIVE_*/CORTEX_*/MISP_* values (API keys from app01/app02's own
+# first-login steps - the TheHive one needs the org-admin profile, not
+# analyst, for manageCaseTemplate - see app01/README.md).
 
 # Create these yourself *before* the first `up` - same root-owned-bind-mount
 # issue as cortex/jobs and cortex-elasticsearch elsewhere in this repo:
@@ -81,13 +183,15 @@ cp .env.example .env
 mkdir -p mailserver/mail-data mailserver/mail-state mailserver/mail-logs \
   mailserver/config/ssl/demoCA
 
-# Self-signed cert (LAN testing only - see the gotcha above). Replace
-# mail.example.test with your real MAIL_HOSTNAME.
+# Self-signed cert (LAN testing only - see the gotchas above). Replace
+# mail.example.test with your real MAIL_HOSTNAME, and the IP with whatever
+# MAILER_SMTP_HOST will be set to in app02/.env.
 FQDN=mail.example.test
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
   -keyout "mailserver/config/ssl/${FQDN}-key.pem" \
   -out "mailserver/config/ssl/${FQDN}-cert.pem" \
-  -subj "/CN=${FQDN}"
+  -subj "/CN=${FQDN}" \
+  -addext "subjectAltName=DNS:${FQDN},IP:203.0.113.10"
 cp "mailserver/config/ssl/${FQDN}-cert.pem" mailserver/config/ssl/demoCA/cacert.pem
 
 docker compose build thephish
@@ -103,29 +207,39 @@ docker compose up -d thephish
 
 ThePhish-NG's UI is then at `http://<this-host>:8080` (no login - see
 "Known gaps"). Point app02's Mailer responder at this host's `:587` with
-the same mailbox credentials - see `app02/README.md`'s "The Mailer
-responder".
+the same mailbox credentials, and build/enable the CA-trusting Mailer image
+- see the gotcha above and `app02/README.md`'s "The Mailer responder".
 
-### Validated locally
+### Validated end-to-end on the real host
 
-Built both images, brought the stack up, created a test mailbox account,
-confirmed ThePhish-NG's homepage (200) and `/api/list` (clean `[]`, proving
-IMAP login succeeded against the self-signed cert with
-`IMAP_TLS_INSECURE=yes`). Then sent a real SMTP message with a `.eml`
-attachment (mimicking a forwarded suspicious email) directly into the
-mailbox and confirmed `/api/list` picked it up correctly, including parsing
-the attached email's subject.
+Confirmed on the real deploy (app02, 2026-07-25) with a hand-crafted
+forwarded-phishing test email (fake account-suspension lure, `.eml`
+attachment): SMTP delivery into the mailbox -> ThePhish-NG's `/api/list`
+parsed it correctly (subject, attached EML) -> `/api/analysis` created a
+real TheHive case, extracted observables (sender address, lookalike
+domain, phishing URL) -> Cortex ran the Ollama analyzer on the attached
+EML (after the `run_analysis.py` patch above) -> Cortex's `Mailer_1_0`
+responder sent both the "being analyzed" notification and the final
+verdict email, confirmed delivered via `postfix/lmtp` logs and mailbox
+size growth. All three of the gotchas above were found and fixed during
+this run.
 
-One thing that tripped up the test traffic but won't affect real forwarded
+Earlier, isolated local validation (before a real TheHive/Cortex backend
+was wired up): built both images, brought the stack up, created a test
+mailbox account, confirmed ThePhish-NG's homepage (200) and `/api/list`
+against a real SMTP-delivered test message.
+
+One thing that tripped up test traffic but won't affect real forwarded
 email: `docker-mailserver`'s bundled amavis rejects messages missing
 standard headers (`Date`, `Message-ID`) as malformed - a hand-crafted test
 message needs them explicitly; every real mail client already sends them.
 
 Not yet validated against a real internet-facing setup (DNS MX record, a
-real TLS cert, SPF/DKIM/DMARC) or against a real Cortex/TheHive-driven
-analysis run (the local test above only exercised IMAP receive/list, not
-`/api/analysis` - that needs real `app01`/`app02` credentials, not the
-placeholder ones used for this local test).
+real TLS cert, SPF/DKIM/DMARC) - inbound SPF checking on this server
+correctly rejected test messages spoofing an external domain's `From`
+address during testing, which is expected/correct, but means real
+employees must actually forward through their own real mail
+infrastructure, not a hand-crafted test client, for delivery to succeed.
 
 ## Known gaps not yet configured
 

@@ -80,8 +80,12 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   Ollama analyzer (`ollama-analyzer/`) is enabled in Cortex and confirmed
   working end-to-end against the real GPU box (`qwen3:14b`), verdict +
   reasoning coming back correctly on a real submitted email.
-- `mail-server/` - built and validated locally (both images build, IMAP
-  login + a real SMTP-delivered test `.eml` round-tripped correctly through
-  ThePhish-NG's `/api/list`), but not yet deployed to the real host or
-  tested against real TheHive/Cortex credentials or a full
-  Cortex-driven analysis + Mailer responder send.
+- `mail-server/` - deployed to the real host (co-located on app02, as
+  planned for testing) and confirmed working fully end-to-end: a forwarded
+  test phishing email is received over SMTP, parsed by ThePhish-NG,
+  creates a real TheHive case with extracted observables, automatically
+  triggers the Ollama analyzer (correctly verdicted "Malicious"), exports
+  the case to MISP, and both the "being analyzed" notification and the
+  final verdict are delivered by Cortex's Mailer responder. Found and fixed
+  four real deploy-time bugs along the way - see `mail-server/README.md`'s
+  and `app02/README.md`'s "gotcha" sections.
