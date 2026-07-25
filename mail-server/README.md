@@ -15,9 +15,12 @@ on the real host" below.
 ThePhish-NG is **not** an automatic poll-and-reply loop, and it has **no
 SMTP logic of its own**:
 
-1. A human opens ThePhish-NG's web UI (`:8080`, no login) and clicks
-   **List emails** - this polls the mailbox below over IMAP.
-2. They pick one and click **Analyze** - this creates a TheHive case,
+1. Something calls **`GET /api/list`** - this polls the mailbox below over
+   IMAP. In ThePhish-NG's own UI this is the "List emails" button; on this
+   deployment it's also done automatically by the `poller` service - see
+   "Automatic analysis" below.
+2. Something calls **`POST /api/analysis`** for a listed email (the UI's
+   **Analyze** button, or the poller) - this creates a TheHive case,
    extracts observables, and runs Cortex's enabled analyzers (including our
    Ollama one).
 3. The verdict email is sent by **starting Cortex's stock `Mailer_1_0`
@@ -25,30 +28,32 @@ SMTP logic of its own**:
    `app02/README.md`'s "The Mailer responder". `Mailer_1_0` does the actual
    `smtplib` send.
 
-So building this out means touching both this host (receive + human-driven
-analysis trigger) *and* app02 (enabling/configuring the Mailer responder).
-Confirmed by reading ThePhish-NG's actual source - there's no `smtplib`,
-`MIMEText`, or similar anywhere in its own codebase.
+So building this out means touching both this host (receive + analysis
+trigger) *and* app02 (enabling/configuring the Mailer responder). Confirmed
+by reading ThePhish-NG's actual source - there's no `smtplib`, `MIMEText`,
+or similar anywhere in its own codebase, and no polling loop either (steps
+1-2 need something external calling its HTTP API - see "Automatic
+analysis" below for what does that on this deployment).
 
-Step 2 still needs a human (or a script) to call `/api/analysis` - there's
-no polling loop that does this on its own. Step 3, once triggered, is now
-fully automatic for **every** verdict including "Suspicious" - see
-"Auto-resolve every verdict, not just Malicious/Safe" below (upstream's
-own default only auto-replies for Malicious/Safe and leaves Suspicious
-open for manual review).
+Step 3, once triggered, is now fully automatic for **every** verdict
+including "Suspicious" - see "Auto-resolve every verdict, not just
+Malicious/Safe" below (upstream's own default only auto-replies for
+Malicious/Safe and leaves Suspicious open for manual review).
 
 ## What's here
 
 - `docker-compose.yml` - `mailserver` (Postfix + Dovecot, bundled) +
-  `thephish` (our own build of ThePhish-NG).
+  `thephish` (our own build of ThePhish-NG) + `poller` (same image,
+  entrypoint overridden - see "Automatic analysis" below).
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
-  deliberately to pick up upstream changes. Also applies three build-time
-  patches (a one-line `sed`, plus two Python scripts under
-  `thephish/patches/`) - see "A real gotcha: Ollama never actually runs
-  automatically", "Auto-resolve every verdict", and "Notify the sender on
-  the wrong forward format" below.
+  deliberately to pick up upstream changes. Also applies several
+  build-time patches (a one-line `sed`, plus Python scripts under
+  `thephish/patches/`, applied in a specific order the Dockerfile
+  comments call out) - see "A real gotcha: Ollama never actually runs
+  automatically", "Auto-resolve every verdict", "Recover forwarded emails
+  from inline quoting", and "A detailed verdict-email body" below.
 - `thephish/config-template/` - ThePhish-NG's config format is plain JSON
   with no env-var substitution support. `configuration.json` (the only file
   with secrets) is rendered from environment variables at container start
@@ -66,7 +71,39 @@ open for manual review).
   see "Sender-domain allowlist" below. Tracked in git (unlike
   `mailserver/config`, which holds secrets/certs and is gitignored),
   layered into the same container path as individual file mounts.
+- `thephish/poller.sh` - calls ThePhish-NG's own `/api/list`/`/api/analysis`
+  HTTP API on a timer - see "Automatic analysis" below.
 - `.env.example` - copy to `.env` (gitignored) and fill in real values.
+
+## Automatic analysis
+
+ThePhish-NG has no polling loop of its own - by default, listing and
+analyzing emails both require a human clicking through the UI. This
+deployment wants the whole thing to run unattended, so `docker-compose.yml`
+adds a `poller` service: same `thephish` image, entrypoint overridden to
+run `thephish/poller.sh` instead of the Flask app. It's a plain loop, no
+patch to ThePhish-NG itself needed - it just calls the same HTTP API a
+human would:
+
+1. `GET /api/list`
+2. `POST /api/analysis` for each returned `mailUID`, one at a time -
+   sequential by design (waits for each to finish before starting the
+   next, and before the next `/api/list` poll), simpler to reason about
+   than concurrent runs for what's a low-volume triage mailbox
+3. Sleep `POLL_INTERVAL_SECONDS` (default 60), repeat
+
+Confirmed on a real deploy: brought the stack up with 5 emails already
+sitting in the mailbox from earlier testing (a mix of Malicious/Suspicious
+/Safe verdicts) - the poller picked all 5 up and worked through them
+automatically with no manual `/api/analysis` calls, each one going all the
+way through case creation, analysis, and the verdict/notification emails
+via the Mailer responder.
+
+Failures are logged and skipped rather than blocking the loop - a failed
+`/api/list` retries next cycle, a failed/timed-out `/api/analysis` (10
+minute cap) moves on to the next email rather than getting stuck. Restart
+policy is `unless-stopped`, same as the other services, so it comes back
+after a host reboot.
 
 ## A real gotcha found while building this: Postfix/Dovecot need TLS certs before they'll even start
 
@@ -202,7 +239,7 @@ Confirmed on a real deploy with a deliberately ambiguous test email
 Suspicious, "Notification mail sent" logged, case resolved as
 `Indeterminate` - no manual intervention needed.
 
-## Notify the sender on the wrong forward format
+## Recover forwarded emails from inline quoting
 
 ThePhish-NG only ever recognizes a forwarded email if it finds a
 `message/rfc822` (or `.eml`-decoded `application/octet-stream`) part
@@ -211,27 +248,101 @@ If someone uses their mail client's default **"Forward"** instead (which
 pastes the original as quoted text in the body - Gmail, Outlook, Apple
 Mail all do this unless you explicitly pick "Forward as attachment"),
 `app/services/list_emails.py` silently drops it: never listed, never
-analyzed, no error anywhere, and it gets silently re-checked and
-re-skipped forever on every future poll since it's never marked seen.
-Confirmed on a real deploy - there's no existing notification for this
-anywhere in ThePhish-NG's own code.
+analyzed, no error anywhere, re-checked and re-skipped forever on every
+future poll. Confirmed on a real deploy - there's no existing handling
+for this anywhere in ThePhish-NG's own code, and asking everyone who
+forwards a suspicious email to remember "as attachment, not inline" isn't
+realistic.
 
-Patched via `thephish/patches/notify_wrong_format.py` (applied at Docker
-build time, same mechanism as the other two patches above):
-`list_emails.py` now sends the sender a one-time notice explaining the
-email needs to be forwarded as an attachment, then marks the message seen
-so it isn't rechecked forever. Deliberately **bypasses TheHive/Cortex/
-Mailer_1_0 entirely** and sends directly over SMTP using this mailbox's
-own IMAP credentials (`config['imap']`, read the same way
-`app/utils/imap_pool.py` does) - there's no case or observable to hang a
-Mailer responder action off for a submission that was never actually
-processed, and creating a throwaway case/alert just to reuse `Mailer_1_0`
-would add TheHive noise for something that isn't an analysis result.
+`app/utils/inline_forward.py` (new module, copied in - not a patch to an
+existing file) does what was asked: finds the **last** recognized
+forward-marker line in the body (Gmail's `---------- Forwarded message
+---------`, Outlook's `-----Original Message-----`, Apple Mail's `Begin
+forwarded message:` - last, not first, to correctly handle chained/nested
+forwards by taking the innermost original), and synthesizes an
+`email.message.Message` from everything after it - "cut the last forward
+and create the eml file from the rest". The header block right after the
+marker (`From:`/`Date:`/`Subject:`) is usually itself valid RFC822, so
+this just feeds it to Python's own email parser rather than hand-rolling
+one; falls back to a placeholder-headers message if that doesn't produce
+a `Subject`/`From`, and gives up (returns `None`) entirely if no marker
+is found at all - deliberately narrow, rather than guessing wrong and
+mis-attributing content.
 
-Confirmed on a real deploy: an inline-forwarded test message correctly
-triggered `Sent wrong-format notice to <sender> for message <uid>` in the
-logs, the notice was delivered (mailbox size grew), and the message no
-longer reappears in `/api/list` on subsequent polls.
+Wired into both places that need it via `thephish/patches/enable_inline_forward.py`
+(must run after `notify_wrong_format.py` below - the Dockerfile enforces
+the order): `list_emails.py` (so the email is listable at all) and
+`case_from_email.py`'s `obtain_eml()` (so the synthesized message is what
+actually gets analyzed - same downstream code path as a real attachment,
+confirmed by reading `case_from_email.py`'s `BytesGenerator(...).flatten()`
+call, which works on any `email.message.Message`, not just ones parsed
+from real attachment bytes).
+
+Confirmed on a real deploy: a hand-crafted inline-forwarded phishing test
+(Gmail-style `---------- Forwarded message ----------` marker) was
+correctly recognized, listed with the *inner* subject, and fully analyzed
+- verdict Malicious, with the sender/domain observables correctly
+extracted from the recovered message, not the outer "Fwd:" wrapper.
+
+### If recovery fails: notify the sender
+
+When no forward marker is found at all (`inline_forward.extract()`
+returns `None`), `thephish/patches/notify_wrong_format.py` sends the
+sender a one-time notice explaining the email needs to be forwarded as an
+attachment, then marks the message seen so it isn't rechecked forever.
+Deliberately **bypasses TheHive/Cortex/Mailer_1_0 entirely** and sends
+directly over SMTP using this mailbox's own IMAP credentials
+(`config['imap']`, read the same way `app/utils/imap_pool.py` does) -
+there's no case or observable to hang a Mailer responder action off for a
+submission that was never actually processed.
+
+**A real self-notify loop, found and fixed during testing**: every
+verdict/notification email (and every wrong-format notice itself) is
+just another message with no `.eml` attachment - if `mail_to` for any of
+them ever resolves back to this mailbox's own address (self-testing by
+sending from/to the same account, as this repo's test scripts do; in
+production this would only happen if an employee's `From` somehow
+resolved back to the triage mailbox itself), each one triggers another
+wrong-format notice, which lands back in the same mailbox, which triggers
+another, forever - confirmed live: this actually ran away during
+development, generating dozens of notices before being caught and fixed.
+Fixed by skipping the notice entirely (but still marking the message
+seen) whenever the sender address matches this mailbox's own
+`config['imap']['user']`.
+
+## A detailed verdict-email body, not a bare one-liner
+
+Upstream's verdict-email body is a single sentence: "Thanks for your
+submission. The e-mail with subject [X] you submitted has been classified
+as Y." No reasoning, no indication of what was actually flagged - even
+though our own Ollama analyzer already computes exactly that
+(`reasons`/`confidence` - see `ollama-analyzer/Ollama/ollama_analyzer.py`'s
+`self.report()` call) and upstream was just discarding it after using it
+to compute the level.
+
+`thephish/patches/detailed_verdict_email.py` (applied at Docker build
+time) captures those fields where they're already being read
+(`analyze_observables()`) and builds a real reply body from them in
+`terminate_analysis()`: the verdict line, then Ollama's own bullet-point
+reasoning with its confidence score, then a list of whichever observables
+were flagged malicious/suspicious. Confirmed on a real deploy - example
+verdict email body, sent for the recovered inline-forward test above:
+
+```
+Thanks for your submission.
+
+The e-mail with subject [Urgent: Your account will be suspended - verify now] you submitted has been classified as Malicious.
+
+Automated analysis findings (confidence: 95%):
+- The email uses a fake domain (paypa1-verify.com) that closely resembles a legitimate PayPal domain (paypal.com).
+- The subject line creates urgency and fear to manipulate the recipient into taking immediate action.
+- The link provided is suspicious and not associated with any official PayPal verification process.
+- The 'from' email address is not a standard PayPal security email address.
+- The email lacks proper personalization and is generic, which is common in phishing attempts.
+
+Flagged items:
+- file_message/rfc822: thephish_1t5k1x76_Urgent: Your account will be suspended - verify now.eml (malicious)
+```
 
 ## Sender-domain allowlist
 
@@ -398,9 +509,11 @@ infrastructure, not a hand-crafted test client, for delivery to succeed.
   anywhere less trusted (same "bring your own reverse proxy" stance already
   taken for TheHive/MISP in app01/app02).
 - **Not internet-facing yet** - no DNS MX record, no real TLS cert
-  (self-signed only), no SPF/DKIM/DMARC records published. Fine for testing
-  forwards from inside the LAN; needed before real employees can forward
-  mail from outside it.
+  (self-signed only). DKIM signing is configured (see "DKIM signing"
+  above) but the DNS TXT records (DKIM + a starting DMARC policy) haven't
+  been published yet - that's the domain owner's DNS zone, out of scope
+  for this repo. Fine for testing forwards from inside the LAN; needed
+  before real employees can forward mail from outside it.
 - **`docker-mailserver`'s spam/AV scanning is minimal** -
   `ENABLE_SPAMASSASSIN=0`/`ENABLE_CLAMAV=0` for now (this mailbox only ever
   receives deliberately-forwarded suspicious mail, so aggressive filtering
