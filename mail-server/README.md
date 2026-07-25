@@ -280,6 +280,34 @@ bind mount (unlike a directory mount, which follows the path) - the
 running container keeps serving the old content with no error, until the
 container is recreated so the mount re-resolves.
 
+## DKIM signing (needed for real deliverability)
+
+`docker-mailserver` ships OpenDKIM enabled by default - it just needs a
+keypair generated for the mailbox's domain (the parent domain, not
+`MAIL_HOSTNAME` - see the domain-collision gotcha above). Confirmed on a
+real deploy this is what actually fixes DMARC rejections at strict
+receivers (Gmail rejected our unsigned outbound mail with `Unauthenticated
+email ... not accepted due to domain's DMARC policy` before this):
+
+```bash
+docker exec mailserver setup config dkim domain "<your mailbox's domain>"
+docker compose up -d mailserver --force-recreate
+```
+
+This writes the keypair under `mailserver/config/opendkim/` (gitignored,
+same as the TLS cert - it's a private key) and prints the DNS `TXT`
+record to publish at `mail._domainkey.<domain>`. Confirmed signing is
+active: `docker logs mailserver | grep -i dkim` shows `DKIM-Signature
+field added (s=mail, d=<domain>)` on outbound mail.
+
+DKIM alone doesn't complete the picture - SPF (a `TXT` record on the
+domain itself, authorizing this server's sending IP) and a DMARC policy
+record (`_dmarc.<domain>`, referencing DKIM/SPF alignment - a reasonable
+starting point is `v=DMARC1; p=none; adkim=r; aspf=r; pct=100`, monitoring
+before enforcing) both need to be published in DNS too - out of scope for
+this repo/host, they're the domain owner's DNS zone, not anything this
+mail server serves itself.
+
 ## First-time deploy
 
 ```bash
@@ -316,6 +344,13 @@ docker compose up -d mailserver
 # account. Same address used for both IMAP (ThePhish-NG polling) and SMTP
 # submission (Cortex's Mailer responder) - see MAILBOX_ADDRESS in .env.
 docker exec mailserver setup email add "$MAILBOX_ADDRESS" "$MAILBOX_PASSWORD"
+
+# DKIM signing - see "DKIM signing" above for the DNS records this prints
+# out and why it matters (without it, real DMARC-enforcing receivers like
+# Gmail reject outbound verdict/notification mail outright).
+MAILBOX_DOMAIN=${MAILBOX_ADDRESS#*@}
+docker exec mailserver setup config dkim domain "$MAILBOX_DOMAIN"
+docker compose up -d mailserver --force-recreate
 
 docker compose up -d thephish
 ```
