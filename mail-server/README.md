@@ -44,9 +44,11 @@ open for manual review).
 - `thephish/Dockerfile` - ThePhish-NG has no Docker image or releases/tags
   of its own (checked 2026-07-22) - this pins a specific upstream commit
   SHA and builds it ourselves. Bump the `THEPHISH_NG_COMMIT` build arg
-  deliberately to pick up upstream changes. Also applies a one-line `sed`
-  patch to `app/services/run_analysis.py` - see "A real gotcha: Ollama
-  never actually runs automatically" below.
+  deliberately to pick up upstream changes. Also applies three build-time
+  patches (a one-line `sed`, plus two Python scripts under
+  `thephish/patches/`) - see "A real gotcha: Ollama never actually runs
+  automatically", "Auto-resolve every verdict", and "Notify the sender on
+  the wrong forward format" below.
 - `thephish/config-template/` - ThePhish-NG's config format is plain JSON
   with no env-var substitution support. `configuration.json` (the only file
   with secrets) is rendered from environment variables at container start
@@ -199,6 +201,37 @@ Confirmed on a real deploy with a deliberately ambiguous test email
 (a legitimate-looking "account activity" notification): verdicted
 Suspicious, "Notification mail sent" logged, case resolved as
 `Indeterminate` - no manual intervention needed.
+
+## Notify the sender on the wrong forward format
+
+ThePhish-NG only ever recognizes a forwarded email if it finds a
+`message/rfc822` (or `.eml`-decoded `application/octet-stream`) part
+while walking the MIME structure - i.e. **forwarded as an attachment**.
+If someone uses their mail client's default **"Forward"** instead (which
+pastes the original as quoted text in the body - Gmail, Outlook, Apple
+Mail all do this unless you explicitly pick "Forward as attachment"),
+`app/services/list_emails.py` silently drops it: never listed, never
+analyzed, no error anywhere, and it gets silently re-checked and
+re-skipped forever on every future poll since it's never marked seen.
+Confirmed on a real deploy - there's no existing notification for this
+anywhere in ThePhish-NG's own code.
+
+Patched via `thephish/patches/notify_wrong_format.py` (applied at Docker
+build time, same mechanism as the other two patches above):
+`list_emails.py` now sends the sender a one-time notice explaining the
+email needs to be forwarded as an attachment, then marks the message seen
+so it isn't rechecked forever. Deliberately **bypasses TheHive/Cortex/
+Mailer_1_0 entirely** and sends directly over SMTP using this mailbox's
+own IMAP credentials (`config['imap']`, read the same way
+`app/utils/imap_pool.py` does) - there's no case or observable to hang a
+Mailer responder action off for a submission that was never actually
+processed, and creating a throwaway case/alert just to reuse `Mailer_1_0`
+would add TheHive noise for something that isn't an analysis result.
+
+Confirmed on a real deploy: an inline-forwarded test message correctly
+triggered `Sent wrong-format notice to <sender> for message <uid>` in the
+logs, the notice was delivered (mailbox size grew), and the message no
+longer reappears in `/api/list` on subsequent polls.
 
 ## Sender-domain allowlist
 

@@ -38,6 +38,16 @@ COPY patches/auto_resolve_all_verdicts.py /tmp/auto_resolve_all_verdicts.py
 RUN python3 /tmp/auto_resolve_all_verdicts.py \
     && grep -q "elif verdict == 'Suspicious':" app/services/run_analysis.py
 
+# A forwarded email with no message/rfc822 (.eml) attachment - i.e.
+# forwarded inline instead of as an attachment, the default "Forward" in
+# most mail clients - is silently dropped by app/services/list_emails.py:
+# never listed, never analyzed, no error, just silently re-skipped on
+# every future poll forever. Confirmed live. Notify the sender once
+# instead, then mark it seen - see patches/notify_wrong_format.py.
+COPY patches/notify_wrong_format.py /tmp/notify_wrong_format.py
+RUN python3 /tmp/notify_wrong_format.py \
+    && grep -q "def notify_wrong_format" app/services/list_emails.py
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Real config (with secrets) is rendered from these templates at container
