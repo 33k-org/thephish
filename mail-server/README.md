@@ -391,6 +391,46 @@ bind mount (unlike a directory mount, which follows the path) - the
 running container keeps serving the old content with no error, until the
 container is recreated so the mount re-resolves.
 
+## Adding another landing address/domain
+
+ThePhish-NG only ever polls one IMAP mailbox (`MAILBOX_ADDRESS`/
+`IMAP_USER` in `.env`) - it has no support for watching multiple
+accounts. To let people forward to a *second* address (on the same or a
+different domain) without standing up a second ThePhish-NG instance, add
+it as a mail **alias** that delivers into the existing mailbox instead of
+a real second account - `docker-mailserver`'s aliases work across
+domains (the alias and its recipient don't need to share a domain), and
+delivering into the same mailbox means the poller picks up mail sent to
+*either* address with zero reconfiguration.
+
+```bash
+docker exec mailserver setup alias add check@spam.jfi.systems phishing@pwned.email
+docker exec mailserver setup config dkim domain "spam.jfi.systems"
+docker compose up -d mailserver --force-recreate
+```
+
+Confirmed on a real deploy: the sender-domain allowlist still applies
+exactly the same regardless of which of our addresses the mail is
+addressed to (it's a restriction on the *sender*, evaluated before
+Postfix even resolves which alias/mailbox the recipient maps to) - a
+non-allowlisted sender to `check@spam.jfi.systems` was rejected with the
+same `Access denied` as sending to the primary address. A test forward to
+`check@spam.jfi.systems` was correctly delivered into the shared mailbox,
+picked up automatically by the poller, and analyzed exactly like mail
+sent to the primary address - same case creation, same Ollama analysis,
+same verdict reply.
+
+DKIM is generated per-domain (not per-alias) because `Mailer_1_0`'s
+`from` (and this repo's other outbound sender, the wrong-format notice)
+are both fixed to `MAILBOX_ADDRESS`'s domain regardless of which alias
+received the original mail - so today, outbound replies are always
+signed as `pwned.email`, never as the new domain. The new domain's DKIM
+key is generated anyway (as asked) so it's ready if a future change ever
+sends mail claiming to be from it. Needs its own DNS `TXT` record at
+`mail._domainkey.<new domain>`, same as the primary domain (see "DKIM
+signing" below) - and its own MX record pointing at this mail server, or
+mail addressed to it will never arrive here in the first place.
+
 ## DKIM signing (needed for real deliverability)
 
 `docker-mailserver` ships OpenDKIM enabled by default - it just needs a

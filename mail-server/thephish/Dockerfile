@@ -62,6 +62,18 @@ RUN python3 /tmp/enable_inline_forward.py \
     && grep -q "inline_forward.extract" app/services/list_emails.py \
     && grep -q "inline_forward.extract" app/services/case_from_email.py
 
+# Pre-existing bug, confirmed live on completely ordinary forwarded email
+# (not anything deliberately malformed): case_from_email.py's parse_eml()
+# serializes the parsed message back to bytes via a strict-ASCII
+# BytesGenerator policy, which crashes outright on any real Unicode
+# character not properly declared/encoded (smart quotes, figure spaces,
+# em-dashes - extremely common in real HTML email). Since this happens
+# before the case is even created, the sender gets total silence - no
+# case, no notification, nothing. See patches/fix_eml_unicode_serialization.py.
+COPY patches/fix_eml_unicode_serialization.py /tmp/fix_eml_unicode_serialization.py
+RUN python3 /tmp/fix_eml_unicode_serialization.py \
+    && grep -q "strbuf.getvalue().encode" app/services/case_from_email.py
+
 # Upstream's verdict-email body is a single bare sentence with no
 # reasoning or indication of what was actually flagged. Pull in our own
 # Ollama analyzer's reasoning/confidence (already computed, previously
