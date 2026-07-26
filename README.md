@@ -1,23 +1,127 @@
 # Self-hosted phishing/spam triage pipeline
 
-Users forward suspicious emails (as an EML attachment) to a dedicated
-mailbox. An analyst opens [ThePhish-NG](https://github.com/dead-plant/ThePhish-NG)'s
-web UI, lists the forwarded emails, and triggers analysis: it extracts
+Employees forward suspicious emails - as an attachment, or just forwarded
+inline - to a dedicated mailbox. From there it's fully automatic: no
+analyst has to open a UI or click "Analyze". A poller drives
+[ThePhish-NG](https://github.com/dead-plant/ThePhish-NG), which extracts
 observables and orchestrates analysis via Cortex + TheHive + MISP -
-including a custom Cortex analyzer that sends the email content to a local
-Ollama instance for LLM-based phishing/social-engineering analysis, as a
-signal alongside the existing threat-intel checks. The verdict is emailed
-back to whoever forwarded the message, via Cortex's own Mailer responder
-(see `mail-server/README.md` for why that split matters).
+including a custom Cortex analyzer that sends the email content to a
+local Ollama instance for LLM-based phishing/social-engineering analysis,
+as a signal alongside the existing threat-intel checks (currently the
+only signal actually enabled - see "Email flow" below). A detailed
+verdict - including the model's own reasoning - is emailed back to
+whoever forwarded the message, via Cortex's own Mailer responder (see
+`mail-server/README.md` for why that split matters).
+
+## Email flow
+
+What actually happens, end to end, and which host does it. Every step
+here has been confirmed live against real forwarded email, not just
+tested in isolation - see each host's own README for the specific
+gotchas found along the way.
+
+```mermaid
+sequenceDiagram
+    participant Employee
+    participant MS as mail-server<br/>(Postfix/Dovecot)
+    participant Poller as mail-server<br/>(poller + ThePhish-NG)
+    participant Hive as app01<br/>(TheHive)
+    participant Cortex as app02<br/>(Cortex)
+    participant GPU as GPU box<br/>(Ollama)
+    participant MISP as app02<br/>(MISP)
+
+    Employee->>MS: Forwards suspicious email (SMTP)
+    MS->>MS: Sender-domain allowlist + SPF check<br/>(reject if neither passes)
+    MS->>MS: Delivered to mailbox<br/>(direct address, or alias into it)
+    loop every POLL_INTERVAL_SECONDS
+        Poller->>MS: GET /api/list (IMAP poll)
+    end
+    alt attached as .eml
+        Poller->>Poller: Use attachment directly
+    else forwarded inline
+        Poller->>Poller: Recover .eml from last<br/>forward marker in the body
+    else neither
+        Poller->>Employee: One-time "forward as<br/>attachment" notice - stop
+    end
+    Poller->>Hive: Create case + extracted observables
+    Poller->>Cortex: Trigger Mailer responder
+    Cortex->>MS: Send "being analyzed" notification (DKIM-signed)
+    MS->>Employee: Notification delivered
+    Poller->>Cortex: Trigger Ollama_Phishing_Analysis_1_0
+    Cortex->>GPU: Headers + body, ask for verdict
+    GPU-->>Cortex: JSON: verdict + confidence + reasons
+    Cortex-->>Poller: Analyzer result
+    Poller->>Hive: Resolve case (auto, every verdict)
+    opt verdict is Malicious
+        Poller->>MISP: Export case/IOCs (record-keeping only)
+    end
+    Poller->>Cortex: Trigger Mailer responder
+    Cortex->>MS: Send verdict + reasoning (DKIM-signed)
+    MS->>Employee: Verdict reply delivered
+```
+
+1. **Employee forwards the email** to the triage mailbox - either
+   `phishing@pwned.email` directly, or any alias that delivers into it
+   (e.g. `check@spam.jfi.systems` - see `mail-server/README.md`'s "Adding
+   another landing address/domain"). Forwarding as an attachment works
+   as designed; forwarding inline (most mail clients' default "Forward")
+   also works, recovered from the body text - see step 3.
+2. **mail-server** (Postfix/Dovecot) receives it on port 25. The sender's
+   domain must be on the allowlist (`postfix-config/sender-domain-allowlist`)
+   *and* pass SPF, or it's rejected outright with no further processing -
+   this is independent of which of our addresses it was sent to. Accepted
+   mail is delivered into the mailbox over LMTP.
+3. **The poller** (a small script running as its own container, same
+   image as ThePhish-NG) calls ThePhish-NG's own `/api/list` on a timer -
+   ThePhish-NG has no polling loop of its own. This IMAP-polls the
+   mailbox and, for each new message: uses it directly if there's a real
+   `.eml`/`message-rfc822` attachment; otherwise tries to recover one from
+   the last recognized forward-marker line in the body (Gmail/Outlook/
+   Apple Mail styles); if neither works, the sender gets a one-time
+   "please forward as an attachment" notice and nothing else happens for
+   that message.
+4. **The poller calls `/api/analysis`** for each newly listed email.
+   ThePhish-NG (`case_from_email.py`) extracts observables (sender
+   address/domain, URLs, IPs, file hashes) from the recovered email's
+   headers and body, and creates a case in **TheHive (app01)** with those
+   observables attached.
+5. **Cortex's Mailer responder (app02)** sends the "being analyzed"
+   notification back to the employee, over SMTP through mail-server,
+   DKIM-signed.
+6. **Cortex (app02) runs the enabled analyzers.** For the attached `.eml`
+   itself, that's `Ollama_Phishing_Analysis_1_0` (a custom analyzer -
+   upstream only ever auto-triggers Yara by default for file observables,
+   patched to include ours too). For the other extracted observables
+   (URLs/domains/IPs/hashes), any enabled stock analyzer would run
+   generically - but as of this writing none are actually toggled on for
+   this org (VirusTotal/AbuseIPDB API keys exist in `app02/.env` but
+   aren't enabled), so **the LLM is currently the only real signal**.
+7. **The Ollama analyzer calls the GPU box** with the email's headers and
+   body, asking for a structured verdict (`malicious`/`suspicious`/`safe`
+   + confidence + reasoning) - see `ollama-analyzer/README.md`'s "Model
+   choice" for why this runs `gpt-oss:latest` (local, 20B) rather than a
+   cloud model or the originally-deployed Qwen3.
+8. **ThePhish-NG resolves the case** based on the analyzer result -
+   Malicious if any observable came back malicious, Suspicious if any
+   came back suspicious, otherwise Safe. Every verdict auto-resolves the
+   case now (upstream only auto-resolves Malicious/Safe by default,
+   leaving Suspicious open indefinitely for manual review - patched so
+   the whole pipeline stays hands-off). A Malicious verdict also exports
+   the case to **MISP (app02)** - one-way, for record-keeping/threat-intel
+   sharing only; nothing about MISP feeds back into the verdict itself.
+9. **Cortex's Mailer responder** sends the final reply - the verdict,
+   the model's actual bullet-point reasoning and confidence, and any
+   flagged observables - back to the employee, again DKIM-signed through
+   mail-server.
 
 ## Hosts
 
 | Host | Role | Status |
 |---|---|---|
-| GPU box | Ollama (Qwen3 14B/32B), A5000 24GB VRAM, `0.0.0.0:11434` firewalled to app02 only | already built (outside this repo) |
+| GPU box | Ollama (`gpt-oss:latest`, 20B), A5000 24GB VRAM, `0.0.0.0:11434` firewalled to app02 only | already built (outside this repo) |
 | `app01/` | TheHive + Cassandra + Elasticsearch | already built, being reconciled into this repo |
 | `app02/` | Cortex (+ its own Elasticsearch) + MISP + MariaDB + Redis + the Ollama analyzer | deployed, connected to app01 |
-| `mail-server/` | Postfix + Dovecot + ThePhish-NG | built and validated locally - not yet deployed (planned: co-located on app02's host for testing) |
+| `mail-server/` | Postfix + Dovecot + ThePhish-NG + the auto-analysis poller | deployed and fully automated - see "Current status" below |
 
 Each host folder is self-contained: its own `docker-compose.yml`, its own
 `.env.example` (copy to `.env`, fill in real secrets, never commit `.env`
@@ -77,15 +181,31 @@ Each host folder is self-contained: its own `docker-compose.yml`, its own
   Cassandra + Elasticsearch all healthy, `/api/status` returning 200).
 - `app02/` - deployed to the real host: Cortex + MISP both healthy and
   connected to app01 (Platform management → Connectors shows both). The
-  Ollama analyzer (`ollama-analyzer/`) is enabled in Cortex and confirmed
-  working end-to-end against the real GPU box (`qwen3:14b`), verdict +
-  reasoning coming back correctly on a real submitted email.
-- `mail-server/` - deployed to the real host (co-located on app02, as
-  planned for testing) and confirmed working fully end-to-end: a forwarded
-  test phishing email is received over SMTP, parsed by ThePhish-NG,
-  creates a real TheHive case with extracted observables, automatically
-  triggers the Ollama analyzer (correctly verdicted "Malicious"), exports
-  the case to MISP, and both the "being analyzed" notification and the
-  final verdict are delivered by Cortex's Mailer responder. Found and fixed
-  four real deploy-time bugs along the way - see `mail-server/README.md`'s
-  and `app02/README.md`'s "gotcha" sections.
+  Ollama analyzer (`ollama-analyzer/`) is enabled in Cortex and running
+  `gpt-oss:latest` on the real GPU box (see "Email flow" above for why
+  that replaced Qwen3) - verdict + reasoning confirmed correct on real
+  submitted email, including brand-notification emails that the previous
+  model confidently misclassified.
+- `mail-server/` - deployed to the real host (co-located on app02) and
+  live: employees are actually forwarding real email to it today. Fully
+  automated end to end - see "Email flow" above - with several rounds of
+  hardening found and fixed against real traffic, not just test cases:
+  - The analysis pipeline runs unattended - a poller triggers `/api/list`
+    and `/api/analysis` on a timer, no one has to open the UI.
+  - Forwarded-inline (not just attached) email is recovered automatically
+    instead of being silently dropped.
+  - Every verdict (not just Malicious/Safe) auto-resolves the case and
+    sends a reply.
+  - The reply itself includes the model's actual reasoning/confidence and
+    flagged observables, not a bare one-line verdict.
+  - A real `.eml`-serialization crash (Unicode characters common in
+    ordinary marketing email - smart quotes, figure spaces) that silently
+    dropped submissions with zero feedback to the sender has been found
+    and fixed.
+  - A sender-domain allowlist (deny-by-default) and DKIM signing are both
+    live, ahead of exposing this to the internet - see
+    `mail-server/README.md`'s relevant sections for the DNS records still
+    needed (SPF/DKIM/DMARC, MX) to make it internet-facing.
+  - A second landing address (`check@spam.jfi.systems`, aliased into the
+    same mailbox) is live, proving the same pipeline supports multiple
+    domains without a second ThePhish-NG instance.
