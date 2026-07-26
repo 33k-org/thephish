@@ -96,19 +96,23 @@ class OllamaAnalyzer(Analyzer):
             )
 
             try:
+                # /api/chat (message-based), not /api/generate (raw prompt
+                # completion) - confirmed by testing live that gpt-oss's
+                # chat template doesn't apply correctly through /api/generate
+                # (produces garbled, unparseable output), while /api/chat
+                # handles it correctly for both gpt-oss and Qwen3.
                 response = requests.post(
-                    f"http://{self.ollama_host}:{self.ollama_port}/api/generate",
+                    f"http://{self.ollama_host}:{self.ollama_port}/api/chat",
                     json={
                         "model": self.model,
-                        "prompt": prompt,
+                        "messages": [{"role": "user", "content": prompt}],
                         "stream": False,
                         "format": "json",
-                        # Qwen3 (this pipeline's target model) "thinks" by
+                        # Reasoning models (Qwen3, gpt-oss) "think" by
                         # default - with think left on, the JSON answer lands
-                        # in Ollama's "thinking" field and "response" comes
-                        # back empty (confirmed by testing live against a
-                        # real Qwen3 instance). Disabling it also cuts
-                        # latency roughly in half.
+                        # in Ollama's "thinking" field instead of the actual
+                        # message content (confirmed live against both).
+                        # Disabling it also cuts latency substantially.
                         "think": False,
                     },
                     timeout=self.timeout,
@@ -117,7 +121,7 @@ class OllamaAnalyzer(Analyzer):
             except requests.RequestException as e:
                 self.error(f"Unable to reach Ollama at {self.ollama_host}:{self.ollama_port}: {e}")
 
-            raw_response = response.json().get("response", "")
+            raw_response = response.json().get("message", {}).get("content", "")
             try:
                 verdict_json = json.loads(raw_response)
             except json.JSONDecodeError:
