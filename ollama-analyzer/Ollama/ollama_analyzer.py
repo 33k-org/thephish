@@ -53,11 +53,44 @@ class OllamaAnalyzer(Analyzer):
             body = self._extract_body(msg)[:12000]
 
             prompt = (
-                "You are a phishing and social-engineering triage assistant. "
-                "Analyze the email below and respond with ONLY a JSON object "
-                'with keys "verdict" (one of "malicious", "suspicious", '
-                '"safe"), "confidence" (integer 0-100), and "reasons" (a list '
-                "of short strings explaining the verdict).\n\n"
+                "You are a phishing and social-engineering triage assistant "
+                "reviewing an email forwarded by an employee who found it "
+                "suspicious. Classify it using these definitions:\n\n"
+                '- "malicious": clear phishing/fraud/social-engineering intent '
+                "- e.g. a lookalike/spoofed domain impersonating a real brand, "
+                "a credential-harvesting or payment request, manufactured "
+                "urgency or threats (account suspension, legal action, limited "
+                "time) pressuring the recipient to click or act, a "
+                "sender/reply-to mismatch designed to deceive, or a request "
+                "for sensitive data or a wire transfer from an unverified "
+                "party.\n"
+                '- "suspicious": genuine ambiguity - some signals are present '
+                "but not enough to be sure either way, and a human should "
+                "double-check. This is for real uncertainty, not a default "
+                "choice when the sender is merely unfamiliar or the email is "
+                "bulk/commercial.\n"
+                '- "safe": no phishing indicators. This includes ordinary '
+                "bulk email - newsletters, marketing, product announcements, "
+                "automated notifications - even with many tracking links, "
+                "unsubscribe links, or external domains, AS LONG AS there is "
+                "no credential harvesting, brand impersonation via a "
+                "lookalike domain, manufactured urgency, or request for "
+                "sensitive information/payment. Being unsolicited or "
+                "commercial does not make an email malicious or suspicious - "
+                "spam and phishing are different things.\n\n"
+                "Before deciding, check: (1) Does a link's domain impersonate "
+                "a real brand the email claims to be from (e.g. paypa1.com "
+                "instead of paypal.com)? (2) Does it ask for credentials, "
+                "payment, or sensitive data? (3) Does it use urgency or "
+                "threats to pressure action? (4) Do the From/Reply-To/links "
+                "mismatch in a way designed to deceive? If none of these "
+                "apply, classify as safe even if the email is unsolicited "
+                "bulk mail you don't recognize.\n\n"
+                "Respond with ONLY a JSON object with keys \"verdict\" (one "
+                'of "malicious", "suspicious", "safe"), "confidence" (integer '
+                '0-100), and "reasons" (a list of short strings explaining '
+                "the verdict, referencing the specific checklist items above "
+                "where relevant).\n\n"
                 f"Headers: {json.dumps(headers)}\n\n"
                 f"Body:\n{body}"
             )
