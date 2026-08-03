@@ -103,12 +103,16 @@ sequenceDiagram
    cloud model or the originally-deployed Qwen3.
 8. **ThePhish-NG resolves the case** based on the analyzer result -
    Malicious if any observable came back malicious, Suspicious if any
-   came back suspicious, otherwise Safe. Every verdict auto-resolves the
-   case now (upstream only auto-resolves Malicious/Safe by default,
-   leaving Suspicious open indefinitely for manual review - patched so
-   the whole pipeline stays hands-off). A Malicious verdict also exports
-   the case to **MISP (app02)** - one-way, for record-keeping/threat-intel
-   sharing only; nothing about MISP feeds back into the verdict itself.
+   came back suspicious, Spam if the Ollama analyzer flagged unsolicited
+   bulk/commercial mail with no phishing indicators, otherwise Safe
+   (see `ollama-analyzer/README.md`'s "Verdict categories" for why Spam
+   is kept distinct from Safe rather than lumped together). Every verdict
+   auto-resolves the case now (upstream only auto-resolves Malicious/Safe
+   by default, leaving Suspicious open indefinitely for manual review -
+   patched so the whole pipeline stays hands-off). A Malicious verdict
+   also exports the case to **MISP (app02)** - one-way, for
+   record-keeping/threat-intel sharing only; nothing about MISP feeds
+   back into the verdict itself.
 9. **Cortex's Mailer responder** sends the final reply - the verdict,
    the model's actual bullet-point reasoning and confidence, and any
    flagged observables - back to the employee, again DKIM-signed through

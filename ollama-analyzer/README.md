@@ -24,8 +24,9 @@ for how it's wired in, built, and enabled, and "Cortex and
   [`cortexutils`](https://github.com/TheHive-Project/cortexutils). Parses
   the submitted `.eml` with Python's `email` module (prefers the
   `text/plain` part, falls back to a crude HTML-tag strip), prompts Ollama
-  for a JSON verdict (`malicious`/`suspicious`/`safe` + confidence +
-  reasons), and reports it with a matching Cortex taxonomy level.
+  for a JSON verdict (`malicious`/`suspicious`/`spam`/`safe` + confidence +
+  reasons - see "Verdict categories" below for why there are 4, not 3),
+  and reports it with a matching Cortex taxonomy level.
 - `Ollama/Dockerfile` / `Ollama/requirements.txt` - builds a small
   `python:3.12-slim` image with `cortexutils` + `requests`. Never pulled
   from a registry - built locally on app02 (see `app02/docker-compose.yml`'s
@@ -103,3 +104,30 @@ tradeoff, it replaced Qwen3 as the deployed model. Qwen3:32b (also
 available on the GPU box) wasn't tested but remains a reasonable
 alternative to try if `gpt-oss:latest`'s judgment degrades on a wider
 sample over time.
+
+## Verdict categories: `spam` as its own thing, not lumped into `safe`
+
+The original 3-category prompt (`malicious`/`suspicious`/`safe`) defined
+"safe" broadly enough to include ordinary bulk marketing/newsletters -
+useful for *not* flagging them as a threat, but it meant a genuine cold
+sales email and a real colleague's reply looked identical in the
+verdict. `safe` and `spam` are now separate: `spam` is unsolicited bulk/
+commercial mail with no phishing indicators (not a security threat, just
+unwanted), `safe` is genuine wanted correspondence or an expected service
+notification. Neither is malicious or suspicious - the split is purely
+about signal quality for the recipient, not risk.
+
+Cortex's own taxonomy only has 4 fixed levels
+(`info`/`safe`/`suspicious`/`malicious` - `cortexutils`' `build_taxonomy()`
+silently forces anything else to `info`), so there's no native `spam`
+level to use there. `spam` maps to the `safe` level for Cortex/TheHive's
+own coloring (it's not a threat), but the literal `spam` string is still
+passed as the taxonomy's displayed value, and separately threaded through
+`mail-server/thephish/patches/spam_category.py` (applied to
+`run_analysis.py` at Docker build time) so the case-level verdict itself -
+and the reply the sender actually receives - says "Spam", not "Safe".
+Confirmed live: a cold-outreach marketing test email came back
+`verdict: "Spam"`, case resolved as `FalsePositive`, and the reply
+correctly read "...has been classified as Spam" with the model's actual
+reasoning (unsolicited commercial marketing, no phishing indicators, no
+urgency, no credential/data request, no domain impersonation).

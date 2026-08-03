@@ -198,12 +198,36 @@ command after editing anything under `../ollama-analyzer/Ollama/`, then
 use Cortex's UI (**Organization → Analyzers → refresh**) or restart Cortex
 to pick up any change to `Ollama.json` itself.
 
-**Qwen3 "thinks" by default** - if you point `model` at a reasoning model
-(this pipeline's target: Qwen3 14B/32B) with Ollama's default settings, the
-JSON verdict ends up in Ollama's `thinking` field instead of `response`,
-which comes back empty (confirmed by testing live against a real Qwen3
-instance). The analyzer sends `"think": false` to avoid this - if you swap
-in a different reasoning model, verify it still respects that flag.
+**Reasoning models "think" by default** - both Qwen3 (originally deployed)
+and `gpt-oss:latest` (deployed now - see `ollama-analyzer/README.md`'s
+"Model choice" for why it replaced Qwen3) put their JSON verdict in
+Ollama's `thinking` field instead of the actual message content unless
+`"think": false` is sent explicitly. Also confirmed live: `gpt-oss`
+doesn't work correctly through `/api/generate` (garbled, unparseable
+output) - the analyzer uses `/api/chat` uniformly, which works for both
+models. If you swap in a different reasoning model, verify it still
+respects `think: false` through `/api/chat`.
+
+**Changing the Ollama host/model for an already-enabled analyzer needs an
+API call, not just `.env`** - same lesson as the Mailer responder's
+`dockerImage` below. `.env`'s `OLLAMA_HOST`/`OLLAMA_MODEL` only pre-fill
+the config form the *first* time the analyzer is enabled; once enabled,
+its configuration lives in Cortex's own storage and won't pick up a
+`.env` change on its own, even after restarting Cortex. Update it
+directly:
+
+```bash
+# Get the analyzer's worker ID and current full configuration first
+curl -s -H "Authorization: Bearer $CORTEX_API_KEY" \
+  http://localhost:9001/api/analyzer/<worker-id>
+
+# Then PATCH with the full configuration object (not just the changed
+# field - a partial PATCH silently drops any field you don't include)
+curl -s -X PATCH -H "Authorization: Bearer $CORTEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"configuration": {"ollama_host": "...", "ollama_port": 11434, "model": "...", "timeout": 300, "auto_extract_artifacts": false, "jobCache": 10, "proxy_http": null, "proxy_https": null, "cacerts": null, "jobTimeout": 30, "check_tlp": true, "max_tlp": 2, "check_pap": true, "max_pap": 2}}' \
+  http://localhost:9001/api/analyzer/<worker-id>
+```
 
 ### The Mailer responder
 
@@ -236,6 +260,23 @@ distinctly-named tag (`thephish/mailer-ca:1`, not
 (Cortex's UI has no field for a responder's Docker image) - Cortex's
 pull-before-run for a name that has no real remote counterpart fails
 harmlessly and falls back to the local build, same as the Ollama analyzer.
+
+**This override doesn't survive a Cortex restart** - confirmed live:
+after `docker compose up -d cortex --force-recreate` (done here for an
+unrelated reason - changing the Ollama analyzer's host), the responder's
+`dockerImage` silently reverted to the catalog definition's default
+(`ghcr.io/thehive-project/mailer:1`), and the Mailer responder started
+failing again with the same self-signed-cert error as before the fix.
+Cortex appears to re-sync worker definitions from its catalog on every
+restart, overwriting this specific field. After *any* Cortex restart,
+re-check (and if needed re-apply) the override:
+
+```bash
+curl -s -H "Authorization: Bearer $CORTEX_API_KEY" \
+  http://localhost:9001/api/responder/<mailer-worker-id> \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['dockerImage'])"
+# If it's back to ghcr.io/thehive-project/mailer:1, re-run the PATCH above.
+```
 
 ### MISP's self-signed cert
 
