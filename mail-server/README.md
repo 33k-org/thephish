@@ -344,6 +344,28 @@ Flagged items:
 - file_message/rfc822: thephish_1t5k1x76_Urgent: Your account will be suspended - verify now.eml (malicious)
 ```
 
+## A 4th case-level verdict: Spam
+
+Upstream's (and this repo's, until now) case verdict is always one of
+Malicious/Suspicious/Safe - which meant unsolicited bulk marketing and a
+genuine colleague's email both just resolved as "Safe", losing a
+distinction that's actually useful to the recipient. Our own Ollama
+analyzer now reports a 4th value, `spam` (see `ollama-analyzer/README.md`'s
+"Verdict categories" for the full reasoning) - but Cortex's own taxonomy
+has no such level, so without extra work it would've silently collapsed
+back into "Safe" at the case level.
+
+`thephish/patches/spam_category.py` (applied at Docker build time, after
+`detailed_verdict_email.py`) threads the analyzer's raw verdict through
+`terminate_analysis()`'s classification so the case itself - and the
+reply the sender receives - can say "Spam" specifically: still not
+Malicious/Suspicious, but distinguished from genuinely wanted mail.
+Resolution status is `FalsePositive`, same as Safe (it's not a security
+incident). Confirmed on a real deploy: a cold-outreach marketing test
+came back `verdict: "Spam"`, resolved `FalsePositive`, with a reply
+correctly reading "...classified as Spam" and the model's reasoning
+(unsolicited commercial marketing, no phishing indicators).
+
 ## Sender-domain allowlist
 
 Before exposing port 25 to the internet: **not being an open relay is not

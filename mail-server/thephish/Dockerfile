@@ -83,6 +83,16 @@ COPY patches/detailed_verdict_email.py /tmp/detailed_verdict_email.py
 RUN python3 /tmp/detailed_verdict_email.py \
     && grep -q "Automated analysis findings" app/services/run_analysis.py
 
+# Our own Ollama analyzer distinguishes "spam" (unsolicited bulk/commercial
+# mail, not a threat) from "safe" (genuine, wanted correspondence) -
+# Cortex's own taxonomy only has 4 fixed levels with no room for that, so
+# without this the case-level verdict would just lump spam in with Safe.
+# Threads the real Ollama verdict through to the case's own Malicious/
+# Suspicious/Spam/Safe classification - see patches/spam_category.py.
+COPY patches/spam_category.py /tmp/spam_category.py
+RUN python3 /tmp/spam_category.py \
+    && grep -q "verdict = \"Spam\"" app/services/run_analysis.py
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Real config (with secrets) is rendered from these templates at container

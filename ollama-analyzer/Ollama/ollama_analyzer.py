@@ -69,28 +69,39 @@ class OllamaAnalyzer(Analyzer):
                 "double-check. This is for real uncertainty, not a default "
                 "choice when the sender is merely unfamiliar or the email is "
                 "bulk/commercial.\n"
-                '- "safe": no phishing indicators. This includes ordinary '
-                "bulk email - newsletters, marketing, product announcements, "
-                "automated notifications - even with many tracking links, "
-                "unsubscribe links, or external domains, AS LONG AS there is "
-                "no credential harvesting, brand impersonation via a "
+                '- "spam": unsolicited bulk/commercial email with no phishing '
+                "indicators - newsletters, marketing, product announcements, "
+                "cold outreach, promotional offers - even with many tracking "
+                "links, unsubscribe links, or external domains, AS LONG AS "
+                "there is no credential harvesting, brand impersonation via a "
                 "lookalike domain, manufactured urgency, or request for "
                 "sensitive information/payment. Being unsolicited or "
                 "commercial does not make an email malicious or suspicious - "
-                "spam and phishing are different things.\n\n"
+                "spam and phishing are different things. This is not a "
+                "security threat, just unwanted mail.\n"
+                '- "safe": genuine, wanted correspondence with no phishing '
+                "indicators and no spam/advertising characteristics - e.g. "
+                "an expected reply, a real colleague/customer/vendor email, "
+                "a service notification the recipient actually uses (e.g. an "
+                "MFA code, a real login alert from a service they have an "
+                "account with).\n\n"
                 "Before deciding, check: (1) Does a link's domain impersonate "
                 "a real brand the email claims to be from (e.g. paypa1.com "
                 "instead of paypal.com)? (2) Does it ask for credentials, "
                 "payment, or sensitive data? (3) Does it use urgency or "
                 "threats to pressure action? (4) Do the From/Reply-To/links "
                 "mismatch in a way designed to deceive? If none of these "
-                "apply, classify as safe even if the email is unsolicited "
-                "bulk mail you don't recognize.\n\n"
+                "apply, it is not malicious or suspicious - then decide "
+                "between spam (unsolicited/bulk/commercial) and safe "
+                "(legitimate, wanted correspondence or a real service the "
+                "recipient uses) based on whether the email looks like "
+                "mass-sent marketing/outreach versus a genuine individual "
+                "message or expected account notification.\n\n"
                 "Respond with ONLY a JSON object with keys \"verdict\" (one "
-                'of "malicious", "suspicious", "safe"), "confidence" (integer '
-                '0-100), and "reasons" (a list of short strings explaining '
-                "the verdict, referencing the specific checklist items above "
-                "where relevant).\n\n"
+                'of "malicious", "suspicious", "spam", "safe"), "confidence" '
+                '(integer 0-100), and "reasons" (a list of short strings '
+                "explaining the verdict, referencing the specific checklist "
+                "items above where relevant).\n\n"
                 f"Headers: {json.dumps(headers)}\n\n"
                 f"Body:\n{body}"
             )
@@ -145,7 +156,21 @@ class OllamaAnalyzer(Analyzer):
             self.unexpectedError(e)
 
     def summary(self, raw):
-        level = raw.get("verdict") if raw.get("verdict") in ("malicious", "suspicious", "safe") else "info"
+        verdict = raw.get("verdict")
+        # Cortex's taxonomy only has 4 fixed levels (info/safe/suspicious/
+        # malicious) - "spam" isn't one of them, but it's not a security
+        # threat either, so it maps to "safe" for coloring/aggregation
+        # purposes. The literal "spam" value is still passed through below,
+        # so it displays distinctly in Cortex/TheHive's UI and in the
+        # verdict-email reply (see run_analysis.py's patched
+        # terminate_analysis(), which reads the raw verdict separately from
+        # this level for exactly this reason).
+        if verdict in ("malicious", "suspicious", "safe"):
+            level = verdict
+        elif verdict == "spam":
+            level = "safe"
+        else:
+            level = "info"
         return {
             "taxonomies": [
                 self.build_taxonomy(level, "Ollama", "Verdict", raw.get("verdict", "unknown"))
