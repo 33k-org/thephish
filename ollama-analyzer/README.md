@@ -131,3 +131,29 @@ Confirmed live: a cold-outreach marketing test email came back
 correctly read "...has been classified as Spam" with the model's actual
 reasoning (unsolicited commercial marketing, no phishing indicators, no
 urgency, no credential/data request, no domain impersonation).
+
+## A more elaborate checklist, to stop over-using `suspicious`
+
+The original "before deciding, check" list was 4 short items - real-world
+testing showed the model treating `suspicious` as a safe default whenever
+it wasn't fully confident, even for completely ordinary brand
+notifications with no actual red flag. Expanded to 9 specific, concrete
+checks (domain/URL legitimacy, credential/payment requests, urgency/fear
+tactics, From/Reply-To/link mismatches, bypass-normal-channels requests,
+attachment risk, generic-greeting-vs-claimed-relationship, authority
+impersonation, and grammar as an explicitly weak-only signal), with
+explicit instructions that `suspicious` is for a *specific* checklist
+item that's genuinely ambiguous after actually being checked - not a
+hedge for general unfamiliarity - and that clean checklist results should
+resolve to `spam` or `safe`, never `suspicious`.
+
+Re-tested against the same 6 real emails used for the model comparison
+above, plus the cold-outreach spam sample: 5/6 resolved decisively and
+correctly (2 Malicious, 3 Safe), each citing specific checklist item
+numbers rather than vague reasoning; the spam sample still correctly came
+back `spam` (90% confidence, no regression from the added rigor); the one
+remaining `suspicious` case cited a concrete signal (a From-header/body
+address mismatch) rather than general uncertainty. Reasoning quality also
+improved on cases that look ambiguous at first glance but aren't - one
+case's model output correctly reasoned that a From-header oddity was "due
+to forwarding, not spoofing," rather than treating it as a red flag.
