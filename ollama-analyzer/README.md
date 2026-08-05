@@ -157,3 +157,29 @@ address mismatch) rather than general uncertainty. Reasoning quality also
 improved on cases that look ambiguous at first glance but aren't - one
 case's model output correctly reasoned that a From-header oddity was "due
 to forwarding, not spoofing," rather than treating it as a red flag.
+
+### Follow-up false positive: ESP tracking domains aren't lookalikes
+
+A real submission (a Swedish birthday-reminder service, "Birthday.se")
+still came back `suspicious` - checklist item (1) treated its
+click-tracking links (on `awstrack.me`, Amazon SES's standard tracking/
+redirect domain) as "not the expected brand domain, raising uncertainty."
+That's wrong: routing links through a completely unrelated third-party
+domain is the *normal* way bulk/transactional email works (Amazon SES,
+SendGrid, Mailchimp, Constant Contact, etc. all do this) - it's a
+different thing entirely from a domain that's actually trying to *look
+like* the brand's own name (the real red flag item (1) is meant to
+catch). Considered having the model do a live web search to verify
+domains instead, but rejected it - it would mean sending email content to
+an external search API on every analysis, undermining the whole point of
+running this locally, for a problem that's really just under-specified
+prompting, not missing information.
+
+Rewrote item (1) to explicitly separate the two cases, with named
+examples of common legitimate ESP tracking domains (`awstrack.me`,
+`sendgrid.net`, `mandrillapp.com`, `list-manage.com`, `constantcontact.com`,
+`click.e.*`). Confirmed on the real email that triggered this: verdict
+changed from `suspicious` to `spam` (90% confidence), citing "all links
+use legitimate third-party tracking domains... no brand-impersonating
+domain." Re-ran the full 6-email set from above too - no regressions,
+all resolved decisively.
